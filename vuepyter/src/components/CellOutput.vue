@@ -1,0 +1,136 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import type { CellOutput } from '../types'
+import { ansiToHtml } from '../utils/ansiToHtml'
+import { sanitizeHtml } from '../utils/htmlSanitize'
+
+const props = withDefaults(
+  defineProps<{
+    outputs?: CellOutput[]
+    maxOutputHeight?: number | false
+    emptyLabel?: string
+  }>(),
+  {
+    outputs: () => [],
+    maxOutputHeight: 400,
+    emptyLabel: 'No output',
+  },
+)
+
+const outputStyle = computed(() => ({
+  maxHeight: props.maxOutputHeight === false ? 'none' : `${props.maxOutputHeight ?? 400}px`,
+  overflow: props.maxOutputHeight === false ? 'visible' : 'auto',
+}))
+
+const resolvedOutputs = computed(() => props.outputs ?? [])
+
+const asText = (value: unknown): string => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join('')
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (typeof value === 'undefined' || value === null) {
+    return ''
+  }
+  return String(value)
+}
+
+const imageSource = (value: unknown): string => {
+  const raw = asText(value).trim()
+  if (!raw) {
+    return ''
+  }
+  return raw.startsWith('data:') ? raw : `data:image/png;base64,${raw}`
+}
+
+const textPlain = (output: CellOutput): string => {
+  if (output.output_type === 'stream') {
+    return asText(output.text)
+  }
+  if (output.output_type === 'error') {
+    return output.traceback.join('\n')
+  }
+  return asText(output.data['text/plain'])
+}
+
+const htmlData = (output: CellOutput): string => {
+  if (output.output_type !== 'display_data' && output.output_type !== 'execute_result') {
+    return ''
+  }
+  return sanitizeHtml(asText(output.data['text/html']))
+}
+
+const tracebackHtml = (output: CellOutput): string => {
+  if (output.output_type !== 'error') {
+    return ''
+  }
+  return ansiToHtml(output.traceback.join('\n'))
+}
+</script>
+
+<template>
+  <div class="vuepyter-output-wrap" :style="outputStyle">
+    <template v-if="resolvedOutputs.length">
+      <div v-for="(output, index) in resolvedOutputs" :key="index" class="vuepyter-output-item">
+        <pre v-if="output.output_type === 'stream'" class="vuepyter-output-pre">{{ textPlain(output) }}</pre>
+        <div v-else-if="output.output_type === 'error'" class="vuepyter-output-error" v-html="tracebackHtml(output)" />
+        <template v-else>
+          <div
+            v-if="output.data['text/html']"
+            class="vuepyter-output-html"
+            v-html="htmlData(output)"
+          />
+          <img
+            v-else-if="output.data['image/png']"
+            class="vuepyter-output-image"
+            :src="imageSource(output.data['image/png'])"
+            alt="cell output"
+          />
+          <pre v-else class="vuepyter-output-pre">{{ textPlain(output) }}</pre>
+        </template>
+      </div>
+    </template>
+    <div v-else class="vuepyter-output-empty">{{ emptyLabel }}</div>
+  </div>
+</template>
+
+<style scoped>
+.vuepyter-output-wrap {
+  overflow: auto;
+  background: var(--vuepyter-output-bg);
+  border-radius: 0.35rem;
+  border: 1px solid var(--vuepyter-cell-border);
+}
+
+.vuepyter-output-item + .vuepyter-output-item {
+  border-top: 1px solid var(--vuepyter-cell-border);
+}
+
+.vuepyter-output-pre,
+.vuepyter-output-error,
+.vuepyter-output-html {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  font-family: var(--vuepyter-font-mono);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.vuepyter-output-error {
+  color: var(--vuepyter-error-color);
+}
+
+.vuepyter-output-image {
+  max-width: 100%;
+  display: block;
+}
+
+.vuepyter-output-empty {
+  color: var(--vuepyter-text-secondary);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+}
+</style>

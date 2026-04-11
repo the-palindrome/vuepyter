@@ -1,0 +1,10 @@
+{
+  "name": "vuepyter-workspace",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix vuepyter run build",
+    "test": "npm --prefix vuepyter run test",
+    "typecheck": "npm --prefix vuepyter run typecheck",
+    "example": "npm --prefix vuepyter exec -- vite . --host --port 5173 --open /examples/simple-example.html"
+  }
+}

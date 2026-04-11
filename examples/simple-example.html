@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vuepyter Simple Example</title>
+    <link rel="stylesheet" href="../vuepyter/dist/vuepyter.css" />
+    <style>
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+        background: #f3f4f6;
+        color: #111827;
+      }
+
+      .page {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 1rem;
+        display: grid;
+        gap: 1rem;
+      }
+
+      .panel {
+        border: 1px solid #d1d5db;
+        border-radius: 0.5rem;
+        background: #ffffff;
+        padding: 0.75rem;
+      }
+
+      pre {
+        margin: 0;
+        max-height: 300px;
+        overflow: auto;
+        font-size: 0.8rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <script type="module">
+      import { createApp, ref, computed } from 'vue'
+      import { Vuepyter } from '/vuepyter/dist/index.mjs'
+
+      const app = createApp({
+        components: {
+          Vuepyter,
+        },
+        setup() {
+          const notebook = ref({
+            nbformat: 4,
+            nbformat_minor: 5,
+            metadata: {
+              kernelspec: {
+                name: 'python3',
+                display_name: 'Python 3',
+              },
+              language_info: {
+                name: 'python',
+              },
+            },
+            cells: [
+              {
+                id: 'example-code-cell',
+                cell_type: 'code',
+                source: 'x = 40 + 2\nx',
+                metadata: {},
+                execution_count: null,
+                outputs: [],
+              },
+              {
+                id: 'example-markdown-cell',
+                cell_type: 'markdown',
+                source: '# Hello from Vuepyter\n\nRun the code cell above.',
+                metadata: {},
+              },
+            ],
+          })
+
+          const lastExecution = ref(null)
+          const notebookJson = computed(() => JSON.stringify(notebook.value, null, 2))
+
+          function onCellComplete(payload) {
+            lastExecution.value = payload
+          }
+
+          return {
+            notebook,
+            notebookJson,
+            lastExecution,
+            onCellComplete,
+          }
+        },
+        template: `
+          <main class="page">
+            <h1>Vuepyter Simple Example</h1>
+
+            <Vuepyter
+              v-model="notebook"
+              :autosave-interval="1000"
+              theme="light"
+              @cell:complete="onCellComplete"
+            />
+
+            <section class="panel">
+              <h2>Notebook JSON</h2>
+              <pre>{{ notebookJson }}</pre>
+            </section>
+
+            <section v-if="lastExecution" class="panel">
+              <h2>Last Execution</h2>
+              <p><strong>Cell:</strong> {{ lastExecution.cellId }}</p>
+              <p><strong>Output Count:</strong> {{ lastExecution.outputs.length }}</p>
+            </section>
+          </main>
+        `,
+      })
+
+      app.mount('#app')
+    </script>
+  </body>
+</html>
