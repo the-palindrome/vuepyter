@@ -219,4 +219,43 @@ describe('components/Notebook keyboard integration', () => {
     expect(firstCell.props('outputHidden')).toBe(true)
     expect(firstCell.props('outputScrollable')).toBe(false)
   })
+
+  it('handles hover toolbar actions for run/convert/move/tag/delete', async () => {
+    const wrapper = mountNotebook()
+    const cells = wrapper.findAllComponents(Cell)
+    const first = cells[0]
+    const second = cells[1]
+
+    await first.get('[aria-label="Run cell"]').trigger('click')
+    first.vm.$emit('toolbarConvert', { index: 0, type: 'markdown' })
+    first.vm.$emit('toolbarMoveDown', 0)
+    second.vm.$emit('toolbarMoveUp', 1)
+    first.vm.$emit('toolbarAddTag', 0)
+    first.vm.$emit('toolbarDelete', 0)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('cellExecute')?.[0]?.[0]).toEqual({ index: 0, advance: false })
+    expect(wrapper.emitted('cellType')?.[0]?.[0]).toEqual({ index: 0, type: 'markdown' })
+    expect(wrapper.emitted('cellMove')?.[0]?.[0]).toEqual({ from: 0, to: 1 })
+    expect(wrapper.emitted('cellMove')?.[1]?.[0]).toEqual({ from: 1, to: 0 })
+    expect(wrapper.emitted('cellTag')?.[0]?.[0]).toEqual({ index: 0 })
+    expect(wrapper.emitted('cellDelete')?.[0]?.[0]).toEqual({ index: 0 })
+  })
+
+  it('renders unexecuted prompt with a non-breaking space to prevent wrapping', () => {
+    const wrapper = mountNotebook([
+      {
+        id: 'code-empty',
+        cell_type: 'code',
+        source: '1 + 1',
+        metadata: {},
+        execution_count: null,
+        outputs: [],
+      },
+    ])
+
+    const prompt = wrapper.get('.vuepyter-cell-counter').text()
+    expect(prompt).toContain('\u00a0')
+    expect(prompt.replace('\u00a0', ' ')).toBe('[ ]:')
+  })
 })

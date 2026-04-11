@@ -329,6 +329,30 @@ const onCellType = (payload: { index: number; type: CellType }) => {
   notebookModel.setCellType(cell.id, payload.type)
 }
 
+const onCellTag = (payload: { index: number }) => {
+  const cell = notebookModel.cells.value[payload.index]
+  if (!cell) {
+    return
+  }
+
+  const metadata =
+    cell.metadata && typeof cell.metadata === 'object' && !Array.isArray(cell.metadata)
+      ? { ...(cell.metadata as Record<string, unknown>) }
+      : {}
+
+  const tags = Array.isArray(metadata.tags) ? metadata.tags.map((tag) => String(tag)) : []
+  if (tags.includes('tag')) {
+    return
+  }
+
+  notebookModel.updateCell(cell.id, {
+    metadata: {
+      ...metadata,
+      tags: [...tags, 'tag'],
+    },
+  })
+}
+
 const onCellExecute = async (payload: { index: number; advance: boolean; insertBelow?: boolean }) => {
   activeCellIndex.value = payload.index
   await executeCell(payload.index)
@@ -346,91 +370,102 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
 
 <template>
   <div class="vuepyter-root" :style="themeStyle">
-    <EditorBar
-      v-if="showEditorBar && editorBarPosition === 'top'"
-      :read-only="resolvedReadOnly"
-      :status="kernel.status.value"
-      :active-cell-type="activeCellType"
-      :cell-types="resolvedCellTypes"
-      :locale="locale"
-      @add-cell="addCell"
-      @delete-active="deleteActiveCell"
-      @set-cell-type="setActiveCellType"
-      @run-active="executeActiveCell()"
-      @run-all="executeAllCells"
-      @restart-kernel="restartKernel"
-      @interrupt="interrupt"
-      @clear-outputs="clearOutputs"
-    >
-      <template v-if="slots['bar-prepend']" #bar-prepend><slot name="bar-prepend" /></template>
-      <template v-if="slots['bar-left']" #bar-left><slot name="bar-left" /></template>
-      <template v-if="slots['bar-center']" #bar-center><slot name="bar-center" /></template>
-      <template v-if="slots['bar-right']" #bar-right><slot name="bar-right" /></template>
-      <template v-if="slots['bar-append']" #bar-append><slot name="bar-append" /></template>
-    </EditorBar>
+    <div class="vuepyter-canvas">
+      <EditorBar
+        v-if="showEditorBar && editorBarPosition === 'top'"
+        :read-only="resolvedReadOnly"
+        :status="kernel.status.value"
+        :active-cell-type="activeCellType"
+        :cell-types="resolvedCellTypes"
+        :locale="locale"
+        @add-cell="addCell"
+        @delete-active="deleteActiveCell"
+        @set-cell-type="setActiveCellType"
+        @run-active="executeActiveCell()"
+        @run-all="executeAllCells"
+        @restart-kernel="restartKernel"
+        @interrupt="interrupt"
+        @clear-outputs="clearOutputs"
+      >
+        <template v-if="slots['bar-prepend']" #bar-prepend><slot name="bar-prepend" /></template>
+        <template v-if="slots['bar-left']" #bar-left><slot name="bar-left" /></template>
+        <template v-if="slots['bar-center']" #bar-center><slot name="bar-center" /></template>
+        <template v-if="slots['bar-right']" #bar-right><slot name="bar-right" /></template>
+        <template v-if="slots['bar-append']" #bar-append><slot name="bar-append" /></template>
+      </EditorBar>
 
-    <Notebook
-      :cells="notebookModel.cells.value"
-      :read-only="resolvedReadOnly"
-      :keymap="keymap"
-      :editor-options="editorOptions"
-      :max-output-height="resolvedMaxOutputHeight"
-      :locale="locale"
-      :dark="isDark"
-      @update:active-index="activeCellIndex = $event"
-      @cell-source="onCellSource"
-      @cell-add="onCellAdd"
+      <Notebook
+        :cells="notebookModel.cells.value"
+        :read-only="resolvedReadOnly"
+        :keymap="keymap"
+        :editor-options="editorOptions"
+        :max-output-height="resolvedMaxOutputHeight"
+        :locale="locale"
+        :dark="isDark"
+        @update:active-index="activeCellIndex = $event"
+        @cell-source="onCellSource"
+        @cell-add="onCellAdd"
       @cell-delete="onCellDelete"
       @cell-move="onCellMove"
+      @cell-tag="onCellTag"
       @cell-type="onCellType"
-      @cell-execute="onCellExecute"
-      @interrupt="interrupt"
-      @restart-kernel="restartKernel"
-      @show-shortcuts="emit('shortcuts:help')"
-      @save="flushModelValue"
-    >
-      <template v-if="slots.editor" #editor="slotProps">
-        <slot name="editor" v-bind="slotProps" />
-      </template>
-      <template v-if="slots['markdown-renderer']" #markdown-renderer="slotProps">
-        <slot name="markdown-renderer" v-bind="slotProps" />
-      </template>
-    </Notebook>
+        @cell-execute="onCellExecute"
+        @interrupt="interrupt"
+        @restart-kernel="restartKernel"
+        @show-shortcuts="emit('shortcuts:help')"
+        @save="flushModelValue"
+      >
+        <template v-if="slots.editor" #editor="slotProps">
+          <slot name="editor" v-bind="slotProps" />
+        </template>
+        <template v-if="slots['markdown-renderer']" #markdown-renderer="slotProps">
+          <slot name="markdown-renderer" v-bind="slotProps" />
+        </template>
+      </Notebook>
 
-    <EditorBar
-      v-if="showEditorBar && editorBarPosition === 'bottom'"
-      :read-only="resolvedReadOnly"
-      :status="kernel.status.value"
-      :active-cell-type="activeCellType"
-      :cell-types="resolvedCellTypes"
-      :locale="locale"
-      @add-cell="addCell"
-      @delete-active="deleteActiveCell"
-      @set-cell-type="setActiveCellType"
-      @run-active="executeActiveCell()"
-      @run-all="executeAllCells"
-      @restart-kernel="restartKernel"
-      @interrupt="interrupt"
-      @clear-outputs="clearOutputs"
-    >
-      <template v-if="slots['bar-prepend']" #bar-prepend><slot name="bar-prepend" /></template>
-      <template v-if="slots['bar-left']" #bar-left><slot name="bar-left" /></template>
-      <template v-if="slots['bar-center']" #bar-center><slot name="bar-center" /></template>
-      <template v-if="slots['bar-right']" #bar-right><slot name="bar-right" /></template>
-      <template v-if="slots['bar-append']" #bar-append><slot name="bar-append" /></template>
-    </EditorBar>
+      <EditorBar
+        v-if="showEditorBar && editorBarPosition === 'bottom'"
+        :read-only="resolvedReadOnly"
+        :status="kernel.status.value"
+        :active-cell-type="activeCellType"
+        :cell-types="resolvedCellTypes"
+        :locale="locale"
+        @add-cell="addCell"
+        @delete-active="deleteActiveCell"
+        @set-cell-type="setActiveCellType"
+        @run-active="executeActiveCell()"
+        @run-all="executeAllCells"
+        @restart-kernel="restartKernel"
+        @interrupt="interrupt"
+        @clear-outputs="clearOutputs"
+      >
+        <template v-if="slots['bar-prepend']" #bar-prepend><slot name="bar-prepend" /></template>
+        <template v-if="slots['bar-left']" #bar-left><slot name="bar-left" /></template>
+        <template v-if="slots['bar-center']" #bar-center><slot name="bar-center" /></template>
+        <template v-if="slots['bar-right']" #bar-right><slot name="bar-right" /></template>
+        <template v-if="slots['bar-append']" #bar-append><slot name="bar-append" /></template>
+      </EditorBar>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .vuepyter-root {
-  display: grid;
-  gap: 0.75rem;
+  min-height: 100%;
+  overflow: auto;
   background: var(--vuepyter-bg);
   color: var(--vuepyter-text);
   font-family: var(--vuepyter-font-mono);
   font-size: var(--vuepyter-font-size);
   border-radius: 0.5rem;
   padding: 0.75rem;
+  box-sizing: border-box;
+}
+
+.vuepyter-canvas {
+  display: grid;
+  gap: 0.75rem;
+  width: min(100%, var(--vuepyter-content-max-width, 1040px));
+  margin: 0 auto;
 }
 </style>

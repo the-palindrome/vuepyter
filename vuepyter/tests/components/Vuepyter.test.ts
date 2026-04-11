@@ -45,6 +45,7 @@ const NotebookStub = defineComponent({
     'cell-add',
     'cell-delete',
     'cell-move',
+    'cell-tag',
     'cell-execute',
     'save',
   ],
@@ -57,6 +58,7 @@ interface NotebookModelMock {
   addCell: ReturnType<typeof vi.fn>
   removeCell: ReturnType<typeof vi.fn>
   setCellType: ReturnType<typeof vi.fn>
+  updateCell: ReturnType<typeof vi.fn>
   setCellSource: ReturnType<typeof vi.fn>
   setCellOutputs: ReturnType<typeof vi.fn>
   resetExecutionState: ReturnType<typeof vi.fn>
@@ -140,6 +142,19 @@ function createNotebookModelMock(): NotebookModelMock {
         cell_type: type,
         ...(type === 'code' ? { execution_count: null, outputs: [] } : {}),
       }
+    }),
+    updateCell: vi.fn((cellId: string, patch: Record<string, unknown>) => {
+      const index = findById(cellId)
+      if (index < 0) {
+        return null
+      }
+      const current = notebook.value.cells[index]
+      if (!current) {
+        return null
+      }
+      const next = { ...current, ...patch }
+      notebook.value.cells[index] = next
+      return next
     }),
     setCellSource: vi.fn((cellId: string, source: string) => {
       const index = findById(cellId)
@@ -375,6 +390,7 @@ describe('components/Vuepyter core interactions', () => {
     notebook.vm.$emit('cell-add', { index: 1, type: 'code' })
     notebook.vm.$emit('cell-delete', { index: 1 })
     notebook.vm.$emit('cell-move', { from: 0, to: 1 })
+    notebook.vm.$emit('cell-tag', { index: 0 })
     await flushAsync()
 
     expect(notebookModel.addCell).toHaveBeenCalledWith(1, 'markdown')
@@ -385,6 +401,11 @@ describe('components/Vuepyter core interactions', () => {
     expect(notebookModel.addCell).toHaveBeenCalledWith(1, 'code')
     expect(notebookModel.removeCell).toHaveBeenCalledTimes(2)
     expect(notebookModel.moveCell).toHaveBeenCalledWith(0, 1)
+    expect(notebookModel.updateCell).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
+      metadata: expect.objectContaining({
+        tags: expect.arrayContaining(['tag']),
+      }),
+    }))
 
     if (kernel.executeCell.mock.calls.length > 0) {
       expect(kernel.executeCell).toHaveBeenCalledWith(expect.objectContaining({

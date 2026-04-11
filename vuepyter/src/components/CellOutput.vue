@@ -9,11 +9,13 @@ const props = withDefaults(
     outputs?: CellOutput[]
     maxOutputHeight?: number | false
     emptyLabel?: string
+    hideEmpty?: boolean
   }>(),
   {
     outputs: () => [],
     maxOutputHeight: 400,
     emptyLabel: 'No output',
+    hideEmpty: false,
   },
 )
 
@@ -23,6 +25,7 @@ const outputStyle = computed(() => ({
 }))
 
 const resolvedOutputs = computed(() => props.outputs ?? [])
+const shouldRender = computed(() => resolvedOutputs.value.length > 0 || !(props.hideEmpty ?? false))
 
 const asText = (value: unknown): string => {
   if (Array.isArray(value)) {
@@ -71,7 +74,7 @@ const tracebackHtml = (output: CellOutput): string => {
 </script>
 
 <template>
-  <div class="vuepyter-output-wrap" :style="outputStyle">
+  <div v-if="shouldRender" class="vuepyter-output-wrap" :style="outputStyle">
     <template v-if="resolvedOutputs.length">
       <div v-for="(output, index) in resolvedOutputs" :key="index" class="vuepyter-output-item">
         <pre v-if="output.output_type === 'stream'" class="vuepyter-output-pre">{{ textPlain(output) }}</pre>
@@ -99,22 +102,22 @@ const tracebackHtml = (output: CellOutput): string => {
 <style scoped>
 .vuepyter-output-wrap {
   overflow: auto;
-  background: var(--vuepyter-output-bg);
-  border-radius: 0.35rem;
-  border: 1px solid var(--vuepyter-cell-border);
+  background: transparent;
+  border-radius: 0;
+  border: 0;
 }
 
 .vuepyter-output-item + .vuepyter-output-item {
-  border-top: 1px solid var(--vuepyter-cell-border);
+  border-top: 1px dashed color-mix(in srgb, var(--vuepyter-cell-border) 65%, transparent);
 }
 
 .vuepyter-output-pre,
 .vuepyter-output-error,
 .vuepyter-output-html {
   margin: 0;
-  padding: 0.5rem 0.75rem;
+  padding: 0.15rem 0.15rem 0.35rem;
   font-family: var(--vuepyter-font-mono);
-  font-size: 0.85rem;
+  font-size: 0.92rem;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -130,7 +133,7 @@ const tracebackHtml = (output: CellOutput): string => {
 
 .vuepyter-output-empty {
   color: var(--vuepyter-text-secondary);
-  padding: 0.5rem 0.75rem;
+  padding: 0.25rem 0.15rem 0.35rem;
   font-size: 0.85rem;
 }
 </style>

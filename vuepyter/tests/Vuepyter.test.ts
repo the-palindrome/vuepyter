@@ -45,7 +45,7 @@ function createFakePyodide() {
 
 const NotebookStub = defineComponent({
   name: 'Notebook',
-  emits: ['cellSource', 'cellExecute', 'save', 'update:activeIndex', 'cellAdd', 'cellDelete', 'cellMove'],
+  emits: ['cellSource', 'cellExecute', 'save', 'update:activeIndex', 'cellAdd', 'cellDelete', 'cellMove', 'cellTag'],
   template: `
     <div>
       <button class="source" @click="$emit('cellSource', { index: 0, source: 'print(2)' })">source</button>

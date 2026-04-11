@@ -1,123 +1,288 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vuepyter Simple Example</title>
-    <link rel="stylesheet" href="../vuepyter/dist/vuepyter.css" />
-    <style>
-      body {
-        margin: 0;
-        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-        background: #f3f4f6;
-        color: #111827;
-      }
 
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vuepyter Simple Example</title>
+  <link rel="stylesheet" href="../vuepyter/dist/vuepyter.css" />
+  <style>
+    :root {
+      --app-gap: 0.75rem;
+      --app-pad: 0.75rem;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    #app {
+      height: 100%;
+    }
+
+    .page {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: var(--left-pane-width, 380px) 10px minmax(0, 1fr);
+      gap: var(--app-gap);
+      padding: var(--app-pad);
+      box-sizing: border-box;
+    }
+
+    .left-pane {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: var(--app-gap);
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .right-pane {
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .editor-fill {
+      height: 100%;
+    }
+
+    .splitter {
+      position: relative;
+      border-radius: 999px;
+      background: #d1d5db;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    .splitter::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 2px;
+      height: 40px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: #9ca3af;
+    }
+
+    .panel {
+      border: 1px solid #d1d5db;
+      border-radius: 0.7rem;
+      background: #ffffff;
+      padding: 0.9rem 1rem;
+      min-height: 0;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      line-height: 1.2;
+    }
+
+    h2 {
+      margin: 0 0 0.5rem;
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: #374151;
+    }
+
+    .panel-json {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 0.5rem;
+      overflow: hidden;
+    }
+
+    pre {
+      margin: 0;
+      min-height: 0;
+      height: 100%;
+      overflow: auto;
+      font-size: 0.8rem;
+      line-height: 1.45;
+      padding: 0.7rem;
+      border-radius: 0.45rem;
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+    }
+
+    body.is-resizing,
+    body.is-resizing * {
+      user-select: none;
+      cursor: col-resize !important;
+    }
+
+    @media (max-width: 960px) {
       .page {
-        max-width: 1100px;
-        margin: 0 auto;
-        padding: 1rem;
-        display: grid;
-        gap: 1rem;
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
       }
 
-      .panel {
-        border: 1px solid #d1d5db;
-        border-radius: 0.5rem;
-        background: #ffffff;
-        padding: 0.75rem;
+      .splitter {
+        display: none;
+      }
+
+      .left-pane {
+        grid-template-rows: auto auto;
       }
 
       pre {
-        margin: 0;
-        max-height: 300px;
-        overflow: auto;
-        font-size: 0.8rem;
+        height: 240px;
       }
-    </style>
-  </head>
-  <body>
-    <div id="app"></div>
+    }
+  </style>
+</head>
 
-    <script type="module">
-      import { createApp, ref, computed } from 'vue'
-      import { Vuepyter } from '/vuepyter/dist/index.mjs'
+<body>
+  <div id="app"></div>
 
-      const app = createApp({
-        components: {
-          Vuepyter,
-        },
-        setup() {
-          const notebook = ref({
-            nbformat: 4,
-            nbformat_minor: 5,
-            metadata: {
-              kernelspec: {
-                name: 'python3',
-                display_name: 'Python 3',
-              },
-              language_info: {
-                name: 'python',
-              },
+  <script type="module">
+    import { createApp, ref, computed, onBeforeUnmount } from 'vue'
+    import { Vuepyter } from '/vuepyter/dist/index.mjs'
+
+    const app = createApp({
+      components: {
+        Vuepyter,
+      },
+      setup() {
+        const notebook = ref({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {
+            kernelspec: {
+              name: 'python3',
+              display_name: 'Python 3',
             },
-            cells: [
-              {
-                id: 'example-code-cell',
-                cell_type: 'code',
-                source: 'x = 40 + 2\nx',
-                metadata: {},
-                execution_count: null,
-                outputs: [],
-              },
-              {
-                id: 'example-markdown-cell',
-                cell_type: 'markdown',
-                source: '# Hello from Vuepyter\n\nRun the code cell above.',
-                metadata: {},
-              },
-            ],
-          })
+            language_info: {
+              name: 'python',
+            },
+          },
+          cells: [
+            {
+              id: 'example-code-cell',
+              cell_type: 'code',
+              source: 'x = 40 + 2\nx',
+              metadata: {},
+              execution_count: null,
+              outputs: [],
+            },
+            {
+              id: 'example-markdown-cell',
+              cell_type: 'markdown',
+              source: '# Hello from Vuepyter\n\nRun the code cell above.',
+              metadata: {},
+            },
+          ],
+        })
 
-          const lastExecution = ref(null)
-          const notebookJson = computed(() => JSON.stringify(notebook.value, null, 2))
+        const notebookJson = computed(() => JSON.stringify(notebook.value, null, 2))
+        const leftPaneWidth = ref(380)
+        const resizing = ref(false)
 
-          function onCellComplete(payload) {
-            lastExecution.value = payload
+        function clamp(value, min, max) {
+          return Math.min(max, Math.max(min, value))
+        }
+
+        function calculateBounds() {
+          const totalWidth = window.innerWidth - 2 * 12
+          const minLeft = 280
+          const minRight = 420
+          const maxLeft = Math.max(minLeft, totalWidth - minRight)
+          return { minLeft, maxLeft }
+        }
+
+        function onPointerMove(event) {
+          if (!resizing.value || window.innerWidth <= 960) {
+            return
           }
 
-          return {
-            notebook,
-            notebookJson,
-            lastExecution,
-            onCellComplete,
+          const { minLeft, maxLeft } = calculateBounds()
+          leftPaneWidth.value = clamp(event.clientX - 12, minLeft, maxLeft)
+        }
+
+        function stopResize() {
+          resizing.value = false
+          document.body.classList.remove('is-resizing')
+          window.removeEventListener('pointermove', onPointerMove)
+          window.removeEventListener('pointerup', stopResize)
+        }
+
+        function startResize(event) {
+          if (window.innerWidth <= 960) {
+            return
           }
-        },
-        template: `
-          <main class="page">
-            <h1>Vuepyter Simple Example</h1>
+          event.preventDefault()
+          resizing.value = true
+          document.body.classList.add('is-resizing')
+          window.addEventListener('pointermove', onPointerMove)
+          window.addEventListener('pointerup', stopResize)
+        }
 
-            <Vuepyter
-              v-model="notebook"
-              :autosave-interval="1000"
-              theme="light"
-              @cell:complete="onCellComplete"
-            />
+        function resetSplit() {
+          leftPaneWidth.value = 380
+        }
 
-            <section class="panel">
-              <h2>Notebook JSON</h2>
-              <pre>{{ notebookJson }}</pre>
+        const pageStyle = computed(() => ({
+          '--left-pane-width': `${leftPaneWidth.value}px`,
+        }))
+
+        onBeforeUnmount(() => {
+          stopResize()
+        })
+
+        return {
+          notebook,
+          notebookJson,
+          pageStyle,
+          startResize,
+          resetSplit,
+        }
+      },
+      template: `
+          <main class="page" :style="pageStyle">
+            <section class="left-pane">
+              <section class="panel">
+                <h1>Vuepyter Example</h1>
+              </section>
+
+              <section class="panel panel-json">
+                <h2>Notebook JSON</h2>
+                <pre>{{ notebookJson }}</pre>
+              </section>
             </section>
 
-            <section v-if="lastExecution" class="panel">
-              <h2>Last Execution</h2>
-              <p><strong>Cell:</strong> {{ lastExecution.cellId }}</p>
-              <p><strong>Output Count:</strong> {{ lastExecution.outputs.length }}</p>
+            <div
+              class="splitter"
+              role="separator"
+              aria-label="Resize panes"
+              aria-orientation="vertical"
+              @pointerdown="startResize"
+              @dblclick="resetSplit"
+            />
+
+            <section class="right-pane">
+              <Vuepyter
+                class="editor-fill"
+                v-model="notebook"
+                :autosave-interval="1000"
+                theme="light"
+              />
             </section>
           </main>
         `,
-      })
+    })
 
-      app.mount('#app')
-    </script>
-  </body>
+    app.mount('#app')
+  </script>
+</body>
+
 </html>

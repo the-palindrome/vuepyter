@@ -138,6 +138,7 @@ export const LIGHT_THEME: ThemeVariables = {
   '--vuepyter-syntax-function': '#d97706',
   '--vuepyter-syntax-variable': '#0f172a',
   '--vuepyter-syntax-operator': '#e11d48',
+  '--vuepyter-content-max-width': '1040px',
 }
 
 export const DARK_THEME: ThemeVariables = {
@@ -167,6 +168,7 @@ export const DARK_THEME: ThemeVariables = {
   '--vuepyter-syntax-function': '#fbbf24',
   '--vuepyter-syntax-variable': '#e5e7eb',
   '--vuepyter-syntax-operator': '#fb7185',
+  '--vuepyter-content-max-width': '1040px',
 }
 
 export const THEME_PRESETS = {

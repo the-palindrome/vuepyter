@@ -34,6 +34,7 @@ const emit = defineEmits<{
   cellAdd: [payload: { index: number; type: CellType; cell?: NotebookCell }]
   cellDelete: [payload: { index: number }]
   cellMove: [payload: { from: number; to: number }]
+  cellTag: [payload: { index: number }]
   cellType: [payload: { index: number; type: NotebookCellType }]
   cellSource: [payload: { index: number; source: string }]
   cellExecute: [payload: { index: number; advance: boolean; insertBelow?: boolean }]
@@ -482,6 +483,46 @@ const onCellSplit = (payload: { index: number; cursorOffset: number }) => {
   emit('cellAdd', { index: payload.index + 1, type: splitCell.cell_type, cell: splitCell })
   activeIndex.value = payload.index + 1
 }
+
+const onCellToolbarConvert = (payload: { index: number; type: NotebookCellType }) => {
+  if (resolvedReadOnly.value) {
+    return
+  }
+  activeIndex.value = payload.index
+  emit('cellType', payload)
+}
+
+const onCellToolbarMoveUp = (index: number) => {
+  if (resolvedReadOnly.value || index <= 0) {
+    return
+  }
+  emit('cellMove', { from: index, to: index - 1 })
+  activeIndex.value = index - 1
+}
+
+const onCellToolbarMoveDown = (index: number) => {
+  if (resolvedReadOnly.value || index >= props.cells.length - 1) {
+    return
+  }
+  emit('cellMove', { from: index, to: index + 1 })
+  activeIndex.value = index + 1
+}
+
+const onCellToolbarAddTag = (index: number) => {
+  if (resolvedReadOnly.value) {
+    return
+  }
+  activeIndex.value = index
+  emit('cellTag', { index })
+}
+
+const onCellToolbarDelete = (index: number) => {
+  if (resolvedReadOnly.value) {
+    return
+  }
+  activeIndex.value = index
+  deleteCellAt(index)
+}
 </script>
 
 <template>
@@ -498,6 +539,7 @@ const onCellSplit = (payload: { index: number; cursorOffset: number }) => {
       :ref="(instance) => setCellRef(cell.id, instance)"
       :cell="cell"
       :index="index"
+      :total-cells="cells.length"
       :active="index === activeIndex"
       :read-only="resolvedReadOnly"
       :max-output-height="resolvedMaxOutputHeight"
@@ -515,6 +557,11 @@ const onCellSplit = (payload: { index: number; cursorOffset: number }) => {
       @navigate-up="() => onCellSelect(Math.max(0, index - 1))"
       @navigate-down="() => onCellSelect(Math.min(cells.length - 1, index + 1))"
       @split-cell="onCellSplit"
+      @toolbar-convert="onCellToolbarConvert"
+      @toolbar-move-up="onCellToolbarMoveUp"
+      @toolbar-move-down="onCellToolbarMoveDown"
+      @toolbar-add-tag="onCellToolbarAddTag"
+      @toolbar-delete="onCellToolbarDelete"
       @drag-start="onCellDragStart"
       @drop="onCellDrop"
       @toggle-markdown-mode="onCellMarkdownMode"

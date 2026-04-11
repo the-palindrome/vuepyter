@@ -93,4 +93,19 @@ defineExpose({
 .vuepyter-code-editor {
   min-height: 2.25rem;
 }
+
+.vuepyter-code-editor :deep(.cm-editor) {
+  border: 1px solid var(--vuepyter-cell-active-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.vuepyter-code-editor :deep(.cm-editor.cm-focused) {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--vuepyter-cell-active-border) 35%, transparent);
+}
+
+.vuepyter-code-editor :deep(.cm-content) {
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+}
 </style>

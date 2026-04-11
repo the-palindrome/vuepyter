@@ -94,4 +94,15 @@ describe('components/CellOutput', () => {
 
     expect(wrapper.get('.vuepyter-output-wrap').attributes('style')).toContain('max-height: 240px;')
   })
+
+  it('can hide empty output container when hideEmpty is enabled', () => {
+    const wrapper = mount(CellOutput, {
+      props: {
+        outputs: [],
+        hideEmpty: true,
+      },
+    })
+
+    expect(wrapper.find('.vuepyter-output-wrap').exists()).toBe(false)
+  })
 })
