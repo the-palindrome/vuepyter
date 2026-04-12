@@ -35,9 +35,7 @@
     }
 
     .left-pane {
-      display: grid;
-      grid-template-rows: auto 1fr;
-      gap: var(--app-gap);
+      display: block;
       min-height: 0;
       min-width: 0;
     }
@@ -71,13 +69,18 @@
       background: #9ca3af;
     }
 
-    .panel {
-      border: 1px solid #d1d5db;
+    .left-pane-card {
       border-radius: 0.7rem;
       background: #ffffff;
       padding: 0.9rem 1rem;
+      border: 0;
       min-height: 0;
       box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+      height: 100%;
+      box-sizing: border-box;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 0.65rem;
     }
 
     h1 {
@@ -87,7 +90,7 @@
     }
 
     h2 {
-      margin: 0 0 0.5rem;
+      margin: 0;
       font-size: 0.95rem;
       font-weight: 700;
       letter-spacing: 0.02em;
@@ -95,24 +98,21 @@
       color: #374151;
     }
 
-    .panel-json {
-      display: grid;
-      grid-template-rows: auto 1fr;
-      gap: 0.5rem;
-      overflow: hidden;
-    }
-
     pre {
       margin: 0;
       min-height: 0;
       height: 100%;
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
       font-size: 0.8rem;
       line-height: 1.45;
       padding: 0.7rem;
       border-radius: 0.45rem;
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
+      background: #ffffff;
+      border: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
 
     body.is-resizing,
@@ -132,7 +132,7 @@
       }
 
       .left-pane {
-        grid-template-rows: auto auto;
+        display: block;
       }
 
       pre {
@@ -155,36 +155,69 @@
       },
       setup() {
         const notebook = ref({
-          nbformat: 4,
-          nbformat_minor: 5,
-          metadata: {
-            kernelspec: {
-              name: 'python3',
-              display_name: 'Python 3',
+          "nbformat": 4,
+          "nbformat_minor": 5,
+          "metadata": {
+            "kernelspec": {
+              "name": "python3",
+              "display_name": "Python 3"
             },
-            language_info: {
-              name: 'python',
-            },
+            "language_info": {
+              "name": "python"
+            }
           },
-          cells: [
+          "cells": [
             {
-              id: 'example-code-cell',
-              cell_type: 'code',
-              source: 'x = 40 + 2\nx',
-              metadata: {},
-              execution_count: null,
-              outputs: [],
+              "id": "example-markdown-cell",
+              "cell_type": "markdown",
+              "source": [
+                "# Hello from Vuepyter\n",
+                "\n",
+                "Vuepyter is a lightweight Jupyter Notebook editor for Vue, enabling you to build data-rich and interactive experiences inside your Vue apps.\n",
+                "\n",
+                "To try it, run the code cell below."
+              ],
+              "metadata": {}
             },
             {
-              id: 'example-markdown-cell',
-              cell_type: 'markdown',
-              source: '# Hello from Vuepyter\n\nRun the code cell above.',
-              metadata: {},
+              "id": "example-code-cell",
+              "cell_type": "code",
+              "source": [
+                "x = 40 + 2\n",
+                "x"
+              ],
+              "metadata": {},
+              "execution_count": null,
+              "outputs": []
             },
-          ],
+            {
+              "id": "9bacfd26-95fe-4acb-b973-670cd48b3da4",
+              "cell_type": "markdown",
+              "source": [
+                "You can also render LaTeX formulas:\n",
+                "\n",
+                "$$\n",
+                "e^{i\\pi} + 1 = 0.\n",
+                "$$"
+              ],
+              "metadata": {}
+            },
+            {
+              "id": "ba433481-fd00-4e76-8db1-965756f4bea2",
+              "cell_type": "code",
+              "source": [],
+              "metadata": {},
+              "execution_count": null,
+              "outputs": []
+            }
+          ]
         })
 
         const notebookJson = computed(() => JSON.stringify(notebook.value, null, 2))
+        const editorTheme = {
+          '--vuepyter-bg': '#ffffff',
+          '--vuepyter-cell-bg': '#ffffff',
+        }
         const leftPaneWidth = ref(380)
         const resizing = ref(false)
 
@@ -242,6 +275,7 @@
         return {
           notebook,
           notebookJson,
+          editorTheme,
           pageStyle,
           startResize,
           resetSplit,
@@ -250,11 +284,8 @@
       template: `
           <main class="page" :style="pageStyle">
             <section class="left-pane">
-              <section class="panel">
+              <section class="left-pane-card">
                 <h1>Vuepyter Example</h1>
-              </section>
-
-              <section class="panel panel-json">
                 <h2>Notebook JSON</h2>
                 <pre>{{ notebookJson }}</pre>
               </section>
@@ -274,7 +305,7 @@
                 class="editor-fill"
                 v-model="notebook"
                 :autosave-interval="1000"
-                theme="light"
+                :theme="editorTheme"
               />
             </section>
           </main>
