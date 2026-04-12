@@ -61,6 +61,7 @@ const emit = defineEmits<{
 
 const activeCellIndex = ref(0)
 const pendingAutosave = ref(false)
+const clipboardCell = ref<NotebookCell | null>(null)
 const slots = useSlots()
 const resolvedReadOnly = computed(() => props.readOnly ?? false)
 const resolvedCellTypes = computed(() => props.cellTypes ?? DEFAULT_CELL_TYPES)
@@ -132,15 +133,37 @@ const themeStyle = computed(() => themeVariables.value)
 
 const activeCell = computed(() => notebookModel.cells.value[activeCellIndex.value] ?? null)
 const activeCellType = computed<CellType>(() => activeCell.value?.cell_type ?? 'code')
+const notebookMetadata = computed<Record<string, unknown>>(() => {
+  const metadata = notebookModel.notebook.value.metadata
+  if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+    return metadata
+  }
+  return {}
+})
+const notebookTitle = computed(() => {
+  const title = notebookMetadata.value.title
+  if (typeof title === 'string' && title.trim()) {
+    return title.trim()
+  }
+  return 'Untitled.ipynb'
+})
+const trusted = computed(() => {
+  const trustedFlag = notebookMetadata.value.trusted
+  if (typeof trustedFlag === 'boolean') {
+    return trustedFlag
+  }
+  return true
+})
+const kernelName = computed(() => props.locale?.kernelName ?? 'Python (Pyodide)')
 
 let emitDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let autosaveTimer: ReturnType<typeof setInterval> | null = null
 
 const serializeNotebook = () => notebookModel.serialize() as unknown as NotebookDocument
 
-const flushModelValue = () => {
+const flushModelValue = (nextDocument?: NotebookDocument) => {
   pendingAutosave.value = false
-  emit('update:modelValue', serializeNotebook())
+  emit('update:modelValue', nextDocument ?? serializeNotebook())
 }
 
 const scheduleModelValueEmit = () => {
@@ -171,6 +194,37 @@ const setupAutosave = () => {
   }, props.autosaveInterval)
 }
 
+const clampIndex = (index: number) => Math.max(0, Math.min(index, notebookModel.cells.value.length - 1))
+
+const generateCellId = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `cell-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+const cloneCell = (cell: NotebookCell, preserveId = true): NotebookCell => {
+  const cloned = JSON.parse(JSON.stringify(cell)) as NotebookCell
+  if (!preserveId) {
+    cloned.id = generateCellId()
+  }
+  if (cloned.cell_type === 'code') {
+    cloned.execution_count = null
+    cloned.outputs = []
+  }
+  return cloned
+}
+
+const updateNotebookMetadata = (patch: Record<string, unknown>) => {
+  notebookModel.notebook.value = {
+    ...notebookModel.notebook.value,
+    metadata: {
+      ...notebookMetadata.value,
+      ...patch,
+    },
+  }
+}
+
 watch(
   () => notebookModel.notebook.value,
   () => {
@@ -195,24 +249,110 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => notebookModel.cells.value.length,
+  (length) => {
+    if (length <= 0) {
+      activeCellIndex.value = 0
+      return
+    }
+    activeCellIndex.value = clampIndex(activeCellIndex.value)
+  },
+)
+
 const addCell = (type: CellType) => {
-  notebookModel.addCell(activeCellIndex.value + 1, type)
+  const insertIndex = Math.min(activeCellIndex.value + 1, notebookModel.cells.value.length)
+  notebookModel.addCell(insertIndex, type)
+  activeCellIndex.value = clampIndex(insertIndex)
+}
+
+const addCellAbove = (type: CellType = 'code') => {
+  const insertIndex = Math.max(0, activeCellIndex.value)
+  notebookModel.addCell(insertIndex, type)
+  activeCellIndex.value = clampIndex(insertIndex)
 }
 
 const deleteActiveCell = () => {
+  if (resolvedReadOnly.value) {
+    return
+  }
   const cell = notebookModel.cells.value[activeCellIndex.value]
   if (!cell) {
     return
   }
   notebookModel.removeCell(cell.id)
+  activeCellIndex.value = clampIndex(activeCellIndex.value)
 }
 
 const setActiveCellType = (type: CellType) => {
+  if (resolvedReadOnly.value) {
+    return
+  }
   const cell = notebookModel.cells.value[activeCellIndex.value]
   if (!cell) {
     return
   }
   notebookModel.setCellType(cell.id, type)
+}
+
+const copyActiveCell = () => {
+  const cell = activeCell.value
+  if (!cell) {
+    return
+  }
+  clipboardCell.value = cloneCell(cell, true)
+}
+
+const cutActiveCell = () => {
+  if (resolvedReadOnly.value) {
+    return
+  }
+  copyActiveCell()
+  deleteActiveCell()
+}
+
+const pasteCellAt = (index: number) => {
+  if (resolvedReadOnly.value || !clipboardCell.value) {
+    return
+  }
+  const safeIndex = Math.max(0, Math.min(index, notebookModel.cells.value.length))
+  const pastedCell = cloneCell(clipboardCell.value, false)
+  notebookModel.insertCell(pastedCell, safeIndex)
+  activeCellIndex.value = clampIndex(safeIndex)
+}
+
+const pasteCellBelow = () => {
+  pasteCellAt(activeCellIndex.value + 1)
+}
+
+const pasteCellAbove = () => {
+  pasteCellAt(activeCellIndex.value)
+}
+
+const duplicateActiveCell = () => {
+  copyActiveCell()
+  pasteCellBelow()
+}
+
+const moveActiveCellBy = (delta: number) => {
+  if (resolvedReadOnly.value) {
+    return
+  }
+  const from = activeCellIndex.value
+  const to = clampIndex(from + delta)
+  if (from === to || notebookModel.cells.value.length <= 1) {
+    return
+  }
+  notebookModel.moveCell(from, to)
+  activeCellIndex.value = to
+}
+
+const moveActiveCellUp = () => {
+  moveActiveCellBy(-1)
+}
+
+const moveActiveCellDown = () => {
+  moveActiveCellBy(1)
 }
 
 const executeCell = async (index: number) => {
@@ -241,9 +381,28 @@ const executeCell = async (index: number) => {
 }
 
 const executeActiveCell = async (advance = false) => {
+  if (activeCell.value?.cell_type === 'markdown') {
+    if (advance) {
+      const nextIndex = activeCellIndex.value + 1
+      if (nextIndex >= notebookModel.cells.value.length) {
+        notebookModel.addCell(notebookModel.cells.value.length, 'code')
+        activeCellIndex.value = notebookModel.cells.value.length - 1
+      } else {
+        activeCellIndex.value = nextIndex
+      }
+    }
+    return
+  }
+
   await executeCell(activeCellIndex.value)
   if (advance) {
-    activeCellIndex.value = Math.min(activeCellIndex.value + 1, notebookModel.cells.value.length - 1)
+    const nextIndex = activeCellIndex.value + 1
+    if (nextIndex >= notebookModel.cells.value.length) {
+      notebookModel.addCell(notebookModel.cells.value.length, 'code')
+      activeCellIndex.value = notebookModel.cells.value.length - 1
+    } else {
+      activeCellIndex.value = nextIndex
+    }
   }
 }
 
@@ -260,6 +419,11 @@ const restartKernel = async () => {
   notebookModel.resetExecutionState()
 }
 
+const restartRunAll = async () => {
+  await restartKernel()
+  await executeAllCells()
+}
+
 const interrupt = () => {
   const interrupted = kernel.interrupt()
   if (!interrupted) {
@@ -272,6 +436,56 @@ const interrupt = () => {
 
 const clearOutputs = () => {
   notebookModel.clearOutputs()
+}
+
+const resolveDownloadFilename = () => {
+  const baseName = notebookTitle.value.trim() || 'Untitled.ipynb'
+  const sanitized = baseName.replace(/[<>:"/\\|?*\u0000-\u001f]+/g, '-').trim() || 'Untitled.ipynb'
+  return /\.ipynb$/iu.test(sanitized) ? sanitized : `${sanitized}.ipynb`
+}
+
+const downloadNotebook = (documentData: NotebookDocument) => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return
+  }
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return
+  }
+
+  const payload = `${JSON.stringify(documentData, null, 2)}\n`
+  const blob = new Blob([payload], { type: 'application/x-ipynb+json' })
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = resolveDownloadFilename()
+  anchor.rel = 'noopener'
+  anchor.style.display = 'none'
+
+  document.body.append(anchor)
+  anchor.click()
+  anchor.remove()
+
+  if (typeof URL.revokeObjectURL === 'function') {
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+  }
+}
+
+const saveNotebook = () => {
+  const snapshot = serializeNotebook()
+  flushModelValue(snapshot)
+  downloadNotebook(snapshot)
+}
+
+const renameNotebook = (nextTitle: string) => {
+  const normalized = nextTitle.trim()
+  if (!normalized) {
+    return
+  }
+  updateNotebookMetadata({ title: normalized })
+}
+
+const toggleTrust = () => {
+  updateNotebookMetadata({ trusted: !trusted.value })
 }
 
 onMounted(async () => {
@@ -390,17 +604,34 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         v-if="showEditorBar && editorBarPosition === 'top'"
         :read-only="resolvedReadOnly"
         :status="kernel.status.value"
+        :trusted="trusted"
+        :notebook-title="notebookTitle"
+        :kernel-name="kernelName"
         :active-cell-type="activeCellType"
         :cell-types="resolvedCellTypes"
         :locale="locale"
+        @save="saveNotebook"
         @add-cell="addCell"
+        @add-cell-above="addCellAbove"
         @delete-active="deleteActiveCell"
         @set-cell-type="setActiveCellType"
         @run-active="executeActiveCell()"
+        @run-and-advance="executeActiveCell(true)"
         @run-all="executeAllCells"
         @restart-kernel="restartKernel"
+        @restart-run-all="restartRunAll"
         @interrupt="interrupt"
         @clear-outputs="clearOutputs"
+        @copy-active="copyActiveCell"
+        @cut-active="cutActiveCell"
+        @paste-below="pasteCellBelow"
+        @paste-above="pasteCellAbove"
+        @move-cell-up="moveActiveCellUp"
+        @move-cell-down="moveActiveCellDown"
+        @duplicate-active="duplicateActiveCell"
+        @toggle-trust="toggleTrust"
+        @show-shortcuts="emit('shortcuts:help')"
+        @rename-notebook="renameNotebook"
       >
         <template v-if="slots['bar-prepend']" #bar-prepend><slot name="bar-prepend" /></template>
         <template v-if="slots['bar-left']" #bar-left><slot name="bar-left" /></template>
@@ -420,15 +651,15 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         @update:active-index="activeCellIndex = $event"
         @cell-source="onCellSource"
         @cell-add="onCellAdd"
-      @cell-delete="onCellDelete"
-      @cell-move="onCellMove"
-      @cell-tag="onCellTag"
-      @cell-type="onCellType"
+        @cell-delete="onCellDelete"
+        @cell-move="onCellMove"
+        @cell-tag="onCellTag"
+        @cell-type="onCellType"
         @cell-execute="onCellExecute"
         @interrupt="interrupt"
         @restart-kernel="restartKernel"
         @show-shortcuts="emit('shortcuts:help')"
-        @save="flushModelValue"
+        @save="saveNotebook"
       >
         <template v-if="slots.editor" #editor="slotProps">
           <slot name="editor" v-bind="slotProps" />
@@ -442,17 +673,34 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         v-if="showEditorBar && editorBarPosition === 'bottom'"
         :read-only="resolvedReadOnly"
         :status="kernel.status.value"
+        :trusted="trusted"
+        :notebook-title="notebookTitle"
+        :kernel-name="kernelName"
         :active-cell-type="activeCellType"
         :cell-types="resolvedCellTypes"
         :locale="locale"
+        @save="saveNotebook"
         @add-cell="addCell"
+        @add-cell-above="addCellAbove"
         @delete-active="deleteActiveCell"
         @set-cell-type="setActiveCellType"
         @run-active="executeActiveCell()"
+        @run-and-advance="executeActiveCell(true)"
         @run-all="executeAllCells"
         @restart-kernel="restartKernel"
+        @restart-run-all="restartRunAll"
         @interrupt="interrupt"
         @clear-outputs="clearOutputs"
+        @copy-active="copyActiveCell"
+        @cut-active="cutActiveCell"
+        @paste-below="pasteCellBelow"
+        @paste-above="pasteCellAbove"
+        @move-cell-up="moveActiveCellUp"
+        @move-cell-down="moveActiveCellDown"
+        @duplicate-active="duplicateActiveCell"
+        @toggle-trust="toggleTrust"
+        @show-shortcuts="emit('shortcuts:help')"
+        @rename-notebook="renameNotebook"
       >
         <template v-if="slots['bar-prepend']" #bar-prepend><slot name="bar-prepend" /></template>
         <template v-if="slots['bar-left']" #bar-left><slot name="bar-left" /></template>
