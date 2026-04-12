@@ -286,10 +286,6 @@ defineExpose({
         />
       </slot>
 
-      <div v-if="isMarkdownCell && markdownEditing" class="vuepyter-markdown-actions">
-        <button type="button" class="vuepyter-inline-button" @click="onToggleMarkdown(false)">Preview</button>
-      </div>
-
       <CellOutput
         v-if="hasVisibleOutput && !resolvedOutputHidden"
         :outputs="codeOutputs"
@@ -422,17 +418,4 @@ defineExpose({
   padding: 0.2rem 0.1rem;
 }
 
-.vuepyter-markdown-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.vuepyter-inline-button {
-  border: 1px solid var(--vuepyter-cell-border);
-  background: var(--vuepyter-button-bg);
-  color: var(--vuepyter-text);
-  border-radius: 0.35rem;
-  padding: 0.2rem 0.45rem;
-  cursor: pointer;
-}
 </style>

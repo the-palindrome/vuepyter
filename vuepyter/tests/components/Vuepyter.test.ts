@@ -419,4 +419,33 @@ describe('components/Vuepyter core interactions', () => {
       expect(notebookModel.setCellOutputs).not.toHaveBeenCalled()
     }
   })
+
+  it('inserts a new code cell when advancing from the last markdown cell', async () => {
+    const { Vuepyter, notebookModel, kernel } = await loadVuepyterWithMocks()
+    notebookModel.notebook.value = {
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          id: 'md-last',
+          cell_type: 'markdown',
+          source: '# Last markdown',
+          metadata: {},
+        },
+      ],
+    }
+
+    const wrapper = mount(Vuepyter as never, {
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+    })
+
+    wrapper.getComponent(NotebookStub).vm.$emit('cell-execute', { index: 0, advance: true })
+    await flushAsync()
+
+    expect(kernel.executeCell).not.toHaveBeenCalled()
+    expect(notebookModel.addCell).toHaveBeenCalledWith(1, 'code')
+  })
 })

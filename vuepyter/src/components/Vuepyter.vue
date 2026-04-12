@@ -354,16 +354,31 @@ const onCellTag = (payload: { index: number }) => {
 }
 
 const onCellExecute = async (payload: { index: number; advance: boolean; insertBelow?: boolean }) => {
+  const cell = notebookModel.cells.value[payload.index]
+  if (!cell) {
+    return
+  }
+
   activeCellIndex.value = payload.index
-  await executeCell(payload.index)
+  if (cell.cell_type === 'code') {
+    await executeCell(payload.index)
+  }
+
   if (payload.insertBelow) {
     const insertIndex = Math.min(payload.index + 1, notebookModel.cells.value.length)
     notebookModel.addCell(insertIndex, 'code')
     activeCellIndex.value = insertIndex
     return
   }
+
   if (payload.advance) {
-    activeCellIndex.value = Math.min(payload.index + 1, notebookModel.cells.value.length - 1)
+    const nextIndex = payload.index + 1
+    if (nextIndex >= notebookModel.cells.value.length) {
+      notebookModel.addCell(notebookModel.cells.value.length, 'code')
+      activeCellIndex.value = notebookModel.cells.value.length - 1
+      return
+    }
+    activeCellIndex.value = nextIndex
   }
 }
 </script>

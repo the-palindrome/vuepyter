@@ -23,9 +23,10 @@ const ALLOWED_TAGS = new Set([
 ])
 
 const ALLOWED_ATTRS: Record<string, Set<string>> = {
-  '*': new Set(['class', 'title']),
+  '*': new Set(['class', 'title', 'aria-hidden']),
   a: new Set(['href', 'target', 'rel', 'title']),
   img: new Set(['src', 'alt', 'title']),
+  span: new Set(['style']),
 }
 
 function isSafeUrl(attribute: 'href' | 'src', value: string): boolean {

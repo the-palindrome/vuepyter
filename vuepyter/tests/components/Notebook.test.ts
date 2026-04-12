@@ -242,6 +242,56 @@ describe('components/Notebook keyboard integration', () => {
     expect(wrapper.emitted('cellDelete')?.[0]?.[0]).toEqual({ index: 0 })
   })
 
+  it('commits markdown edit mode and advances selection on execute', async () => {
+    const wrapper = mountNotebook([
+      {
+        id: 'md-1',
+        cell_type: 'markdown',
+        source: '# Heading',
+        metadata: {},
+      },
+      {
+        id: 'code-2',
+        cell_type: 'code',
+        source: 'print(2)',
+        metadata: {},
+        execution_count: null,
+        outputs: [],
+      },
+    ])
+
+    const firstCell = wrapper.findAllComponents(Cell)[0]
+    firstCell.vm.$emit('toggleMarkdownMode', { index: 0, editing: true })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('.code-editor-stub').length).toBeGreaterThan(0)
+
+    firstCell.vm.$emit('execute', { index: 0, advance: true })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('cellExecute')?.[0]?.[0]).toEqual({ index: 0, advance: true })
+    const cellsAfter = wrapper.findAllComponents(Cell)
+    expect(cellsAfter[0]?.props('markdownEditing')).toBe(false)
+    expect(cellsAfter[1]?.props('active')).toBe(true)
+  })
+
+  it('does not render a preview button in markdown edit mode', async () => {
+    const wrapper = mountNotebook([
+      {
+        id: 'md-only',
+        cell_type: 'markdown',
+        source: '# Previewless',
+        metadata: {},
+      },
+    ])
+
+    const cell = wrapper.getComponent(Cell)
+    cell.vm.$emit('toggleMarkdownMode', { index: 0, editing: true })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.vuepyter-markdown-actions').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Preview')
+  })
+
   it('renders unexecuted prompt with a non-breaking space to prevent wrapping', () => {
     const wrapper = mountNotebook([
       {

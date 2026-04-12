@@ -33,4 +33,11 @@ This is **bold** and *italic* with [a link](https://example.com).
     const html = renderMarkdownToHtml('[x](https://safe.example)', { sanitize: false })
     expect(html).toContain('<a href="https://safe.example">x</a>')
   })
+
+  it('renders KaTeX math in markdown output', () => {
+    const html = renderMarkdownToHtml('Inline: $x^2$')
+
+    expect(html).toContain('class="katex"')
+    expect(html).toContain('class="katex-html"')
+  })
 })

@@ -434,14 +434,21 @@ const onCellSelect = (index: number) => {
 }
 
 const onCellExecute = (payload: { index: number; advance: boolean; insertBelow?: boolean }) => {
+  const cell = props.cells[payload.index]
+  if (cell?.cell_type === 'markdown') {
+    markdownEditById.value[cell.id] = false
+    blurActiveEditor()
+    setMode('command')
+  }
+
   activeIndex.value = payload.index
   emit('cellExecute', payload)
   if (payload.insertBelow) {
     activeIndex.value = Math.min(payload.index + 1, props.cells.length)
     return
   }
-  if (payload.advance && payload.index < props.cells.length - 1) {
-    activeIndex.value = payload.index + 1
+  if (payload.advance) {
+    activeIndex.value = Math.min(payload.index + 1, props.cells.length)
   }
 }
 

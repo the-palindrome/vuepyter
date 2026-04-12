@@ -38,6 +38,13 @@ describe('utils/htmlSanitize', () => {
     )
   })
 
+  it('keeps span style and aria-hidden attributes for KaTeX markup', () => {
+    const html = sanitizeHtml('<span class="katex-html" aria-hidden="true"><span style="top:-3em">x</span></span>')
+
+    expect(html).toContain('aria-hidden="true"')
+    expect(html).toContain('style="top:-3em"')
+  })
+
   it('falls back to escaped text when document is unavailable', () => {
     const original = globalThis.document
     vi.stubGlobal('document', undefined)

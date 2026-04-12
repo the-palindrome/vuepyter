@@ -40,4 +40,21 @@ describe('utils/markdownRender', () => {
   it('returns an empty string for blank markdown', () => {
     expect(renderMarkdownToHtml('   \n\n')).toBe('')
   })
+
+  it('renders inline and block LaTeX with KaTeX', () => {
+    const inlineHtml = renderMarkdown('Euler identity: $e^{i\\pi}+1=0$')
+    const blockHtml = renderMarkdown('$$\n\\int_0^1 x^2\\,dx\n$$')
+
+    expect(inlineHtml).toContain('class="katex"')
+    expect(inlineHtml).toContain('class="katex-html"')
+    expect(blockHtml).toContain('class="katex-display"')
+    expect(blockHtml).toContain('class="katex"')
+  })
+
+  it('does not parse latex delimiters inside inline code spans', () => {
+    const html = renderMarkdown('`$not-math$` and $x^2$')
+
+    expect(html).toContain('<code>$not-math$</code>')
+    expect(html).toContain('class="katex"')
+  })
 })

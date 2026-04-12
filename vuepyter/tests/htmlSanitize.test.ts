@@ -26,4 +26,10 @@ describe('sanitizeHtml', () => {
     const sanitized = sanitizeHtml('<img src="data:image/png;base64,abc123" alt="ok" />')
     expect(sanitized).toContain('data:image/png;base64,abc123')
   })
+
+  it('preserves KaTeX span attributes needed for layout', () => {
+    const sanitized = sanitizeHtml('<span class="katex-html" aria-hidden="true"><span style="height:1em">x</span></span>')
+    expect(sanitized).toContain('aria-hidden="true"')
+    expect(sanitized).toContain('style="height:1em"')
+  })
 })

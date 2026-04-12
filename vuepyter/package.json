@@ -43,6 +43,7 @@
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.6",
     "@lezer/highlight": "^1.2.3",
+    "katex": "^0.16.45",
     "lucide-vue-next": "^1.0.0"
   },
   "devDependencies": {
