@@ -4,8 +4,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Vuepyter Simple Example</title>
-  <link rel="stylesheet" href="../vuepyter/dist/vuepyter.css" />
+  <title>Vuepyter Quickstart</title>
+  <link rel="stylesheet" href="../../vuepyter/dist/vuepyter.css" />
   <style>
     :root {
       --app-gap: 0.75rem;
@@ -146,8 +146,10 @@
   <div id="app"></div>
 
   <script type="module">
-    import { createApp, ref, computed, onBeforeUnmount } from 'vue'
+    import { createApp, ref, computed, onBeforeUnmount, onMounted } from 'vue'
     import { Vuepyter } from '/vuepyter/dist/index.mjs'
+
+    const QUICKSTART_NOTEBOOK_URL = './quickstart.ipynb'
 
     const app = createApp({
       components: {
@@ -155,65 +157,19 @@
       },
       setup() {
         const notebook = ref({
-          "nbformat": 4,
-          "nbformat_minor": 5,
-          "metadata": {
-            "kernelspec": {
-              "name": "python3",
-              "display_name": "Python 3"
-            },
-            "language_info": {
-              "name": "python"
-            }
-          },
-          "cells": [
-            {
-              "id": "example-markdown-cell",
-              "cell_type": "markdown",
-              "source": [
-                "# Hello from Vuepyter\n",
-                "\n",
-                "Vuepyter is a lightweight Jupyter Notebook editor for Vue, enabling you to build data-rich and interactive experiences inside your Vue apps.\n",
-                "\n",
-                "To try it, run the code cell below."
-              ],
-              "metadata": {}
-            },
-            {
-              "id": "example-code-cell",
-              "cell_type": "code",
-              "source": [
-                "x = 40 + 2\n",
-                "x"
-              ],
-              "metadata": {},
-              "execution_count": null,
-              "outputs": []
-            },
-            {
-              "id": "9bacfd26-95fe-4acb-b973-670cd48b3da4",
-              "cell_type": "markdown",
-              "source": [
-                "You can also render LaTeX formulas:\n",
-                "\n",
-                "$$\n",
-                "e^{i\\pi} + 1 = 0.\n",
-                "$$"
-              ],
-              "metadata": {}
-            },
-            {
-              "id": "ba433481-fd00-4e76-8db1-965756f4bea2",
-              "cell_type": "code",
-              "source": [],
-              "metadata": {},
-              "execution_count": null,
-              "outputs": []
-            }
-          ]
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {},
+          cells: [],
         })
+        const notebookLoaded = ref(false)
 
-        const notebookJson = computed(() => JSON.stringify(notebook.value, null, 2))
+        const notebookJson = computed(() =>
+          notebookLoaded.value
+            ? JSON.stringify(notebook.value, null, 2)
+            : 'Loading quickstart notebook...',
+        )
+
         const editorTheme = {
           '--vuepyter-bg': '#ffffff',
           '--vuepyter-cell-bg': '#ffffff',
@@ -264,9 +220,30 @@
           leftPaneWidth.value = 380
         }
 
+        async function loadQuickstartNotebook() {
+          try {
+            const response = await fetch(QUICKSTART_NOTEBOOK_URL, { cache: 'no-store' })
+            if (!response.ok) {
+              throw new Error(`Failed to load ${QUICKSTART_NOTEBOOK_URL}: ${response.status}`)
+            }
+            const data = await response.json()
+            if (!data || typeof data !== 'object' || !Array.isArray(data.cells)) {
+              throw new Error('Invalid notebook format')
+            }
+            notebook.value = data
+            notebookLoaded.value = true
+          } catch (error) {
+            console.error(error)
+          }
+        }
+
         const pageStyle = computed(() => ({
           '--left-pane-width': `${leftPaneWidth.value}px`,
         }))
+
+        onMounted(() => {
+          void loadQuickstartNotebook()
+        })
 
         onBeforeUnmount(() => {
           stopResize()

@@ -4,7 +4,8 @@ This folder contains simple usage examples for `vuepyter`.
 
 ## Files
 
-- `simple-example.html` - standalone browser-runnable example (no bundler required for the example page).
+- `quickstart/quickstart.html` - runnable quickstart example page.
+- `quickstart/quickstart.ipynb` - notebook used by the quickstart page.
 
 ## Run the standalone HTML example
 
@@ -15,7 +16,7 @@ npm run build
 npm run example
 ```
 
-`npm run example` opens `http://localhost:5173/examples/simple-example.html` automatically.
+`npm run example` opens `http://localhost:5173/examples/quickstart/quickstart.html` automatically.
 
 If your machine still reports `ENOSPC` watcher errors, increase Linux inotify limits:
 
