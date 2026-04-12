@@ -6,6 +6,8 @@ This folder contains simple usage examples for `vuepyter`.
 
 - `quickstart/quickstart.html` - runnable quickstart example page.
 - `quickstart/quickstart.ipynb` - notebook used by the quickstart page.
+- `game-of-life/game-of-life.html` - two-panel game-of-life starter layout with an empty left pane.
+- `game-of-life/game-of-life.ipynb` - blank notebook used by the game-of-life example.
 
 ## Run the standalone HTML example
 
