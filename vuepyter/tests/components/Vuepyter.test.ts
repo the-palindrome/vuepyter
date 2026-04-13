@@ -21,6 +21,7 @@ const EditorBarStub = defineComponent({
     'set-cell-type',
     'run-active',
     'run-all',
+    'set-kernel-update-mode',
     'restart-kernel',
     'interrupt',
     'clear-outputs',
@@ -385,6 +386,7 @@ describe('components/Vuepyter core interactions', () => {
     notebook.vm.$emit('cell-source', { index: 0, source: 'x = 1' })
     bar.vm.$emit('set-cell-type', 'raw')
     bar.vm.$emit('clear-outputs')
+    bar.vm.$emit('set-kernel-update-mode', 'always-live')
     bar.vm.$emit('add-cell', 'markdown')
     bar.vm.$emit('delete-active')
     notebook.vm.$emit('cell-add', { index: 1, type: 'code' })
@@ -406,6 +408,7 @@ describe('components/Vuepyter core interactions', () => {
         tags: expect.arrayContaining(['tag']),
       }),
     }))
+    expect(wrapper.emitted('kernel:update-mode')?.[0]).toEqual([{ mode: 'always-live' }])
 
     if (kernel.executeCell.mock.calls.length > 0) {
       expect(kernel.executeCell).toHaveBeenCalledWith(expect.objectContaining({

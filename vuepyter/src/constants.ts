@@ -93,6 +93,8 @@ export const DEFAULT_LOCALE: VuepyterLocale = {
   runAllCells: 'Run all cells',
   restartKernel: 'Restart kernel',
   interruptKernel: 'Interrupt',
+  kernelUpdateModeAfterExecution: 'Update views after cell execution',
+  kernelUpdateModeAlwaysLive: 'Always live updates (experimental)',
   clearAllOutputs: 'Clear outputs',
   statusLoading: 'Loading',
   statusReady: 'Ready',

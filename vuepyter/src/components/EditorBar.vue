@@ -16,7 +16,7 @@ import {
   Square,
   Trash2,
 } from 'lucide-vue-next'
-import type { CellType, KernelStatus } from '../types'
+import type { CellType, KernelStatus, KernelUpdateMode } from '../types'
 
 type MenuId = 'file' | 'edit' | 'run' | 'kernel'
 type MenuAction =
@@ -43,6 +43,8 @@ type MenuAction =
   | 'interrupt'
   | 'restartKernel'
   | 'restartRunAll'
+  | 'setUpdateModeAfterExecution'
+  | 'setUpdateModeAlwaysLive'
   | 'toggleTrust'
   | 'showShortcuts'
   | 'duplicateActive'
@@ -71,6 +73,7 @@ const props = withDefaults(
     notebookTitle?: string
     trusted?: boolean
     kernelName?: string
+    kernelUpdateMode?: KernelUpdateMode
   }>(),
   {
     readOnly: false,
@@ -81,6 +84,7 @@ const props = withDefaults(
     notebookTitle: 'Untitled.ipynb',
     trusted: true,
     kernelName: 'Python (Pyodide)',
+    kernelUpdateMode: 'after-execution',
   },
 )
 
@@ -106,6 +110,7 @@ const emit = defineEmits<{
   toggleTrust: []
   showShortcuts: []
   duplicateActive: []
+  setKernelUpdateMode: [mode: KernelUpdateMode]
   renameNotebook: [title: string]
 }>()
 
@@ -118,6 +123,9 @@ const titleDraft = ref(props.notebookTitle)
 const resolvedReadOnly = computed(() => props.readOnly ?? false)
 const resolvedTitle = computed(() => props.notebookTitle?.trim() || 'Untitled.ipynb')
 const resolvedKernelName = computed(() => props.kernelName?.trim() || 'Python (Pyodide)')
+const resolvedKernelUpdateMode = computed<KernelUpdateMode>(() =>
+  props.kernelUpdateMode === 'always-live' ? 'always-live' : 'after-execution',
+)
 const resolvedCellTypes = computed<CellType[]>(() =>
   props.cellTypes?.length ? props.cellTypes : ['code', 'markdown', 'raw'],
 )
@@ -139,6 +147,10 @@ const labels = computed(() => ({
   restartKernel: props.locale?.restartKernel ?? 'Restart kernel',
   restartRunAll: props.locale?.restartRunAll ?? 'Restart kernel and run all cells',
   interruptKernel: props.locale?.interruptKernel ?? 'Interrupt kernel',
+  kernelUpdateModeAfterExecution:
+    props.locale?.kernelUpdateModeAfterExecution ?? 'Update views after cell execution',
+  kernelUpdateModeAlwaysLive:
+    props.locale?.kernelUpdateModeAlwaysLive ?? 'Always live updates (experimental)',
   clearAllOutputs: props.locale?.clearAllOutputs ?? 'Clear all outputs',
   statusLoading: props.locale?.kernelLoading ?? props.locale?.statusLoading ?? 'Loading',
   statusReady: props.locale?.kernelReady ?? props.locale?.statusReady ?? 'Ready',
@@ -256,6 +268,17 @@ const menuDefinitions = computed<MenuDefinition[]>(() => [
       { id: 'kernel-interrupt', label: labels.value.interruptKernel, action: 'interrupt' },
       { id: 'kernel-restart', label: labels.value.restartKernel, action: 'restartKernel' },
       { id: 'kernel-restart-run-all', label: labels.value.restartRunAll, action: 'restartRunAll' },
+      { id: 'kernel-separator-a', separator: true },
+      {
+        id: 'kernel-update-after-execution',
+        label: `${resolvedKernelUpdateMode.value === 'after-execution' ? '[x]' : '[ ]'} ${labels.value.kernelUpdateModeAfterExecution}`,
+        action: 'setUpdateModeAfterExecution',
+      },
+      {
+        id: 'kernel-update-always-live',
+        label: `${resolvedKernelUpdateMode.value === 'always-live' ? '[x]' : '[ ]'} ${labels.value.kernelUpdateModeAlwaysLive}`,
+        action: 'setUpdateModeAlwaysLive',
+      },
     ],
   },
 ])
@@ -413,6 +436,12 @@ const runMenuAction = (action: MenuAction) => {
       break
     case 'restartRunAll':
       emit('restartRunAll')
+      break
+    case 'setUpdateModeAfterExecution':
+      emit('setKernelUpdateMode', 'after-execution')
+      break
+    case 'setUpdateModeAlwaysLive':
+      emit('setKernelUpdateMode', 'always-live')
       break
     case 'toggleTrust':
       emit('toggleTrust')

@@ -66,8 +66,12 @@ describe('EditorBar', () => {
     await wrapper.get('[data-testid="menu-kernel"]').trigger('click')
     await wrapper.get('[data-testid="menu-item-kernel-restart-run-all"]').trigger('click')
 
+    await wrapper.get('[data-testid="menu-kernel"]').trigger('click')
+    await wrapper.get('[data-testid="menu-item-kernel-update-always-live"]').trigger('click')
+
     expect(wrapper.emitted('runAndAdvance')?.length).toBe(1)
     expect(wrapper.emitted('restartRunAll')?.length).toBe(1)
+    expect(wrapper.emitted('setKernelUpdateMode')?.[0]).toEqual(['always-live'])
   })
 
   it('supports inline notebook renaming', async () => {

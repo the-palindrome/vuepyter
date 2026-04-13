@@ -4,6 +4,7 @@ import type { ComputedRef, MaybeRefOrGetter, Ref, ShallowRef } from 'vue'
 export type CellType = 'code' | 'markdown' | 'raw'
 export type NotebookCellType = CellType
 export type KernelStatus = 'loading' | 'ready' | 'busy' | 'error'
+export type KernelUpdateMode = 'after-execution' | 'always-live'
 export type NotebookMode = 'command' | 'edit'
 export type NotebookMetadata = Record<string, unknown>
 export type WorkspaceState = Record<string, unknown>
@@ -231,6 +232,8 @@ export interface VuepyterLocale {
   runAllCells: string
   restartKernel: string
   interruptKernel: string
+  kernelUpdateModeAfterExecution: string
+  kernelUpdateModeAlwaysLive: string
   clearAllOutputs: string
   statusLoading: string
   statusReady: string
@@ -249,6 +252,7 @@ export interface VuepyterProps {
   pyodideUrl?: string
   pyodidePackages?: string[]
   pyodideInitCode?: string
+  kernelUpdateMode?: KernelUpdateMode
   readOnly?: boolean
   showEditorBar?: boolean
   editorBarPosition?: 'top' | 'bottom'
@@ -316,6 +320,10 @@ export interface KernelCompletePayload {
   error?: Error
 }
 
+export interface KernelWorkspaceSyncPayload {
+  workspace: WorkspaceState
+}
+
 export interface KernelExecuteResult {
   cellId?: string
   outputs: CellOutput[]
@@ -328,10 +336,12 @@ export interface UsePyodideKernelOptions {
   pyodideUrl?: string
   pyodidePackages?: string[]
   pyodideInitCode?: string
+  getWorkspaceUpdateMode?: () => KernelUpdateMode
   onReady?: (payload: KernelReadyPayload) => void
   onError?: (payload: KernelErrorPayload) => void
   onExecute?: (payload: KernelExecutePayload) => void
   onComplete?: (payload: KernelCompletePayload) => void
+  onWorkspaceSync?: (payload: KernelWorkspaceSyncPayload) => void
 }
 
 export interface UseVuepyterProvideOptions {

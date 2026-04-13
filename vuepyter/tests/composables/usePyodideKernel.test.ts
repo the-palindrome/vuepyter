@@ -189,6 +189,40 @@ describe('composables/usePyodideKernel', () => {
     expect(kernel.status.value).toBe('ready')
   })
 
+  it('supports always-live workspace sync mode during cell execution', async () => {
+    const instance = createMockPyodide()
+    const onWorkspaceSync = vi.fn()
+
+    instance.runPythonAsync.mockImplementation(async (source: string) => {
+      if (source.includes('step_once()')) {
+        const liveSync = instance.__globalsMap.get('_vuepyter_live_sync_workspace')
+        if (typeof liveSync === 'function') {
+          ;(liveSync as () => void)()
+        }
+        return undefined
+      }
+      return undefined
+    })
+
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+    const kernel = usePyodideKernel({
+      getWorkspaceUpdateMode: () => 'always-live',
+      onWorkspaceSync,
+    })
+    await kernel.initialize()
+    onWorkspaceSync.mockClear()
+
+    await kernel.executeCell({
+      source: 'for _ in range(2):\n    step_once()',
+    })
+
+    const executedSource = instance.runPythonAsync.mock.calls.at(-1)?.[0]
+    expect(String(executedSource)).toContain('async def __vuepyter_live_yield__():')
+    expect(String(executedSource)).toContain('await __vuepyter_live_yield__()')
+    expect(String(executedSource)).toContain('step_once()')
+    expect(onWorkspaceSync.mock.calls.length).toBeGreaterThan(0)
+  })
+
   it('queues executions sequentially when multiple runs are requested', async () => {
     const instance = createMockPyodide()
     const first = deferred<unknown>()

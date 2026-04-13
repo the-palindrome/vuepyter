@@ -62,6 +62,7 @@ const EditorBarStub = defineComponent({
     'copyActive',
     'pasteBelow',
     'moveCellDown',
+    'setKernelUpdateMode',
     'renameNotebook',
     'toggleTrust',
     'save',

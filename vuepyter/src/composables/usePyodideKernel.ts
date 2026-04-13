@@ -8,6 +8,7 @@ import type {
   KernelExecuteResult,
   KernelReadyPayload,
   KernelStatus,
+  KernelUpdateMode,
   LoadPyodide,
   PyodideInterface,
   UsePyodideKernelOptions,
@@ -191,6 +192,115 @@ async function installPyodidePackages(
 
 function noop(): void {}
 
+const LIVE_WORKSPACE_SYNC_INTERVAL_MS = 48
+
+function countLeadingIndent(line: string): number {
+  let indent = 0
+  for (const char of line) {
+    if (char === ' ') {
+      indent += 1
+      continue
+    }
+    if (char === '\t') {
+      indent += 4
+      continue
+    }
+    break
+  }
+  return indent
+}
+
+function createIndent(length: number): string {
+  return ' '.repeat(Math.max(0, length))
+}
+
+function instrumentAlwaysLiveSource(source: string): string {
+  if (!source.trim()) {
+    return source
+  }
+
+  const lines = source.split('\n')
+  const helperLine = 'await __vuepyter_live_yield__()'
+  const insertionMap = new Map<number, string[]>()
+  const loopStack: Array<{ indent: number; bodyIndent: number }> = []
+
+  const addInsertion = (lineIndex: number, line: string) => {
+    const bucket = insertionMap.get(lineIndex)
+    if (bucket) {
+      bucket.push(line)
+      return
+    }
+    insertionMap.set(lineIndex, [line])
+  }
+
+  const closeLoops = (lineIndex: number, nextIndent: number) => {
+    while (loopStack.length > 0) {
+      const top = loopStack[loopStack.length - 1]
+      if (!top || nextIndent > top.indent) {
+        break
+      }
+      addInsertion(lineIndex, `${createIndent(top.bodyIndent)}${helperLine}`)
+      loopStack.pop()
+    }
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? ''
+    const trimmed = line.trim()
+    if (!trimmed) {
+      continue
+    }
+
+    const indent = countLeadingIndent(line)
+    closeLoops(index, indent)
+
+    const isTopLevelLoop =
+      indent === 0
+      && /^(for|while)\b/.test(trimmed)
+      && trimmed.endsWith(':')
+
+    if (!isTopLevelLoop) {
+      continue
+    }
+
+    loopStack.push({ indent, bodyIndent: indent + 4 })
+  }
+
+  closeLoops(lines.length, -1)
+
+  if (insertionMap.size === 0) {
+    return source
+  }
+
+  const prefixLines = [
+    'import asyncio as __vuepyter_asyncio__',
+    '',
+    'async def __vuepyter_live_yield__():',
+    '    try:',
+    '        _vuepyter_live_sync_workspace()',
+    '    except Exception:',
+    '        pass',
+    '    await __vuepyter_asyncio__.sleep(0)',
+    '',
+  ]
+
+  const output: string[] = [...prefixLines]
+  for (let index = 0; index < lines.length; index += 1) {
+    const pending = insertionMap.get(index)
+    if (pending) {
+      output.push(...pending)
+    }
+    output.push(lines[index] ?? '')
+  }
+
+  const tail = insertionMap.get(lines.length)
+  if (tail) {
+    output.push(...tail)
+  }
+
+  return output.join('\n')
+}
+
 function cleanupKernelInstance(instance: PyodideInterface | null): void {
   if (!instance) {
     return
@@ -231,6 +341,9 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
   let initializePromise: Promise<PyodideInterface> | null = null
   let executionQueue: Promise<unknown> = Promise.resolve()
 
+  const resolveWorkspaceUpdateMode = (): KernelUpdateMode =>
+    options.getWorkspaceUpdateMode?.() === 'always-live' ? 'always-live' : 'after-execution'
+
   function syncWorkspace(): WorkspaceState {
     const instance = pyodide.value
     if (!instance) {
@@ -244,6 +357,7 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
       })
       workspace.value = normalizeWorkspaceValue(globalsRaw)
       maybeDestroy(globalsRaw)
+      options.onWorkspaceSync?.({ workspace: workspace.value })
     } catch (error) {
       emitError(options.onError, {
         type: 'workspace:sync',
@@ -332,10 +446,19 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
       status.value = 'busy'
       executionCount.value += 1
       const currentExecutionCount = executionCount.value
+      const updateMode = resolveWorkspaceUpdateMode()
+      const liveMode = updateMode === 'always-live'
+      let liveSyncRequested = false
+      let liveSyncTimer: ReturnType<typeof setInterval> | null = null
 
       const outputs: CellOutput[] = []
       let stdout = ''
       let stderr = ''
+      const executionSource = liveMode ? instrumentAlwaysLiveSource(request.source) : request.source
+
+      const maybeSyncWorkspaceLive = (): void => {
+        liveSyncRequested = true
+      }
 
       const pushStreams = (): void => {
         if (stdout) {
@@ -360,6 +483,9 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         instance.setStdout({
           batched: (value: string) => {
             stdout += value
+            if (liveMode) {
+              maybeSyncWorkspaceLive()
+            }
           },
         })
       }
@@ -367,12 +493,46 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         instance.setStderr({
           batched: (value: string) => {
             stderr += value
+            if (liveMode) {
+              maybeSyncWorkspaceLive()
+            }
           },
         })
       }
 
+      if (liveMode) {
+        try {
+          instance.globals.set('_vuepyter_live_sync_workspace', maybeSyncWorkspaceLive)
+        } catch {
+          // If callback injection fails, continue without in-cell live requests.
+        }
+
+        liveSyncRequested = true
+        liveSyncTimer = setInterval(() => {
+          if (!liveSyncRequested) {
+            return
+          }
+          liveSyncRequested = false
+          syncWorkspace()
+        }, LIVE_WORKSPACE_SYNC_INTERVAL_MS)
+
+        try {
+          if (typeof (globalThis as { requestAnimationFrame?: unknown }).requestAnimationFrame === 'function') {
+            ;(globalThis as { requestAnimationFrame: (callback: () => void) => number }).requestAnimationFrame(() => {
+              if (!liveSyncRequested) {
+                return
+              }
+              liveSyncRequested = false
+              syncWorkspace()
+            })
+          }
+        } catch {
+          // Ignore optional frame-sync setup errors.
+        }
+      }
+
       try {
-        const result = await instance.runPythonAsync(request.source)
+        const result = await instance.runPythonAsync(executionSource)
         const plainResult = toPlainExecutionValue(result)
         pushStreams()
 
@@ -427,6 +587,17 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         }
         return response
       } finally {
+        if (liveMode) {
+          try {
+            instance.globals.set('_vuepyter_live_sync_workspace', null)
+          } catch {
+            // Ignore cleanup callback errors.
+          }
+          if (liveSyncTimer) {
+            clearInterval(liveSyncTimer)
+            liveSyncTimer = null
+          }
+        }
         if (typeof instance.setStdout === 'function') {
           instance.setStdout({ batched: noop })
         }

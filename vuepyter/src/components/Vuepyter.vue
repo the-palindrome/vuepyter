@@ -11,7 +11,14 @@ import {
 import { useNotebookModel } from '../composables/useNotebookModel'
 import { usePyodideKernel } from '../composables/usePyodideKernel'
 import { useVuepyterProvide } from '../composables/useVuepyterProvide'
-import type { CellType, CodeEditorProps, KeymapConfig, NotebookCell, NotebookDocument } from '../types'
+import type {
+  CellType,
+  CodeEditorProps,
+  KernelUpdateMode,
+  KeymapConfig,
+  NotebookCell,
+  NotebookDocument,
+} from '../types'
 import EditorBar from './EditorBar.vue'
 import Notebook from './Notebook.vue'
 
@@ -21,6 +28,7 @@ const props = withDefaults(
     pyodideUrl?: string
     pyodidePackages?: string[]
     pyodideInitCode?: string
+    kernelUpdateMode?: KernelUpdateMode
     readOnly?: boolean
     showEditorBar?: boolean
     editorBarPosition?: 'top' | 'bottom'
@@ -37,6 +45,7 @@ const props = withDefaults(
     pyodideUrl: DEFAULT_PYODIDE_URL,
     pyodidePackages: () => [],
     pyodideInitCode: '',
+    kernelUpdateMode: 'after-execution',
     readOnly: false,
     showEditorBar: true,
     editorBarPosition: 'top',
@@ -55,6 +64,8 @@ const emit = defineEmits<{
   ready: [payload: { pyodide: unknown; workspace: { value: Record<string, unknown> } }]
   'cell:execute': [payload: { cellId: string; source: string }]
   'cell:complete': [payload: { cellId: string; outputs: unknown[]; error?: Error }]
+  'workspace:sync': [payload: { workspace: Record<string, unknown>; mode: KernelUpdateMode }]
+  'kernel:update-mode': [payload: { mode: KernelUpdateMode }]
   'shortcuts:help': []
   error: [payload: { type: string; message: string; detail?: unknown }]
 }>()
@@ -66,6 +77,9 @@ const slots = useSlots()
 const resolvedReadOnly = computed(() => props.readOnly ?? false)
 const resolvedCellTypes = computed(() => props.cellTypes ?? DEFAULT_CELL_TYPES)
 const resolvedMaxOutputHeight = computed(() => props.maxOutputHeight ?? 400)
+const kernelUpdateMode = ref<KernelUpdateMode>(
+  props.kernelUpdateMode === 'always-live' ? 'always-live' : 'after-execution',
+)
 
 const locale = computed(() => ({
   ...DEFAULT_LOCALE,
@@ -99,10 +113,17 @@ const kernel = usePyodideKernel({
   pyodideUrl: props.pyodideUrl,
   pyodidePackages: props.pyodidePackages,
   pyodideInitCode: props.pyodideInitCode,
+  getWorkspaceUpdateMode: () => kernelUpdateMode.value,
   onReady: ({ pyodide }) => {
     emit('ready', {
       pyodide,
       workspace: kernel.workspace,
+    })
+  },
+  onWorkspaceSync: ({ workspace }) => {
+    emit('workspace:sync', {
+      workspace,
+      mode: kernelUpdateMode.value,
     })
   },
   onError: (payload) => {
@@ -247,6 +268,13 @@ watch(
     setupAutosave()
   },
   { immediate: true },
+)
+
+watch(
+  () => props.kernelUpdateMode,
+  (mode) => {
+    kernelUpdateMode.value = mode === 'always-live' ? 'always-live' : 'after-execution'
+  },
 )
 
 watch(
@@ -424,8 +452,19 @@ const restartRunAll = async () => {
   await executeAllCells()
 }
 
+const setKernelUpdateMode = (mode: KernelUpdateMode) => {
+  const normalized: KernelUpdateMode = mode === 'always-live' ? 'always-live' : 'after-execution'
+  if (kernelUpdateMode.value === normalized) {
+    return
+  }
+  kernelUpdateMode.value = normalized
+  emit('kernel:update-mode', { mode: normalized })
+}
+
 defineExpose({
   executeAllCells,
+  setKernelUpdateMode,
+  getKernelUpdateMode: () => kernelUpdateMode.value,
 })
 
 const interrupt = () => {
@@ -621,6 +660,7 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         :trusted="trusted"
         :notebook-title="notebookTitle"
         :kernel-name="kernelName"
+        :kernel-update-mode="kernelUpdateMode"
         :active-cell-type="activeCellType"
         :cell-types="resolvedCellTypes"
         :locale="locale"
@@ -634,6 +674,7 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         @run-all="executeAllCells"
         @restart-kernel="restartKernel"
         @restart-run-all="restartRunAll"
+        @set-kernel-update-mode="setKernelUpdateMode"
         @interrupt="interrupt"
         @clear-outputs="clearOutputs"
         @copy-active="copyActiveCell"
@@ -691,6 +732,7 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         :trusted="trusted"
         :notebook-title="notebookTitle"
         :kernel-name="kernelName"
+        :kernel-update-mode="kernelUpdateMode"
         :active-cell-type="activeCellType"
         :cell-types="resolvedCellTypes"
         :locale="locale"
@@ -704,6 +746,7 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         @run-all="executeAllCells"
         @restart-kernel="restartKernel"
         @restart-run-all="restartRunAll"
+        @set-kernel-update-mode="setKernelUpdateMode"
         @interrupt="interrupt"
         @clear-outputs="clearOutputs"
         @copy-active="copyActiveCell"

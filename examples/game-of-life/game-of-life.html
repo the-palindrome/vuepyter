@@ -153,6 +153,7 @@
           cols: 0,
           grid: [],
         })
+        const kernelUpdateMode = ref('after-execution')
         const isAutoExecuting = ref(false)
         const hasAutoExecuted = ref(false)
         const hasCenteredOnState = ref(false)
@@ -260,6 +261,19 @@
             normalized.push(row)
           }
           return normalized
+        }
+
+        function applyGameState(rows, cols, rawGrid) {
+          const safeRows = Math.max(0, Number(rows) || 0)
+          const safeCols = Math.max(0, Number(cols) || 0)
+          const grid = normalizeGrid(rawGrid, safeRows, safeCols)
+          gameState.value = { rows: safeRows, cols: safeCols, grid }
+          if (!hasCenteredOnState.value && safeRows > 0 && safeCols > 0) {
+            setInitialCamera(safeCols / 2, safeRows / 2)
+            hasCenteredOnState.value = true
+            return
+          }
+          drawGame()
         }
 
         function destroyPyProxy(value) {
@@ -427,16 +441,7 @@ json.dumps(payload)
               return
             }
 
-            const rows = Math.max(0, Number(payload.rows) || 0)
-            const cols = Math.max(0, Number(payload.cols) || 0)
-            const grid = normalizeGrid(payload.grid, rows, cols)
-            gameState.value = { rows, cols, grid }
-            if (!hasCenteredOnState.value) {
-              setInitialCamera(cols / 2, rows / 2)
-              hasCenteredOnState.value = true
-            } else {
-              drawGame()
-            }
+            applyGameState(payload.rows, payload.cols, payload.grid)
           } catch (error) {
             console.error(error)
             gameState.value = { rows: 0, cols: 0, grid: [] }
@@ -514,8 +519,62 @@ json.dumps(payload)
           void maybeAutoExecuteAll()
         }
 
+        function onKernelUpdateMode(payload) {
+          const mode = payload && payload.mode === 'always-live' ? 'always-live' : 'after-execution'
+          kernelUpdateMode.value = mode
+          if (mode === 'after-execution') {
+            void refreshGameState()
+          }
+        }
+
+        function onWorkspaceSync(payload) {
+          if (kernelUpdateMode.value !== 'always-live') {
+            return
+          }
+
+          const workspace = payload && typeof payload === 'object' ? payload.workspace : null
+          if (!workspace || typeof workspace !== 'object') {
+            return
+          }
+
+          const game = workspace.game
+          if (!game || typeof game !== 'object') {
+            return
+          }
+
+          let gridProxy = null
+          let rawGrid = null
+          try {
+            rawGrid = game.grid
+            if (rawGrid && typeof rawGrid === 'object' && typeof rawGrid.toJs === 'function') {
+              gridProxy = rawGrid
+              rawGrid = rawGrid.toJs()
+            }
+          } catch {
+            destroyPyProxy(gridProxy)
+            return
+          }
+
+          if (!Array.isArray(rawGrid)) {
+            destroyPyProxy(rawGrid)
+            destroyPyProxy(gridProxy)
+            return
+          }
+
+          const rowsValue = Number(game.rows)
+          const colsValue = Number(game.cols)
+          const rows = Number.isFinite(rowsValue) && rowsValue > 0 ? rowsValue : rawGrid.length
+          const cols = Number.isFinite(colsValue) && colsValue > 0 ? colsValue : (rawGrid[0]?.length ?? 0)
+
+          applyGameState(rows, cols, rawGrid)
+          destroyPyProxy(rawGrid)
+          destroyPyProxy(gridProxy)
+        }
+
         function onCellComplete() {
-          void refreshGameState()
+          if (kernelUpdateMode.value === 'after-execution') {
+            void refreshGameState()
+          }
         }
 
         const pageStyle = computed(() => ({
@@ -550,6 +609,8 @@ json.dumps(payload)
           onCanvasPointerMove,
           onCanvasPointerUp,
           onKernelReady,
+          onKernelUpdateMode,
+          onWorkspaceSync,
           onCellComplete,
         }
       },
@@ -588,6 +649,8 @@ json.dumps(payload)
                 :autosave-interval="1000"
                 :theme="editorTheme"
                 @ready="onKernelReady"
+                @kernel:update-mode="onKernelUpdateMode"
+                @workspace:sync="onWorkspaceSync"
                 @cell:complete="onCellComplete"
               />
             </section>
