@@ -218,6 +218,79 @@ describe('components/Notebook keyboard integration', () => {
     expect(wrapper.emitted('restartKernel')?.length ?? 0).toBe(1)
     expect(firstCell.props('outputHidden')).toBe(true)
     expect(firstCell.props('outputScrollable')).toBe(false)
+    expect(wrapper.emitted('cellMetadata')?.[0]?.[0]).toEqual({
+      index: 0,
+      metadata: {
+        outputCollapsed: true,
+        outputs_hidden: true,
+        jupyter: {
+          outputs_hidden: true,
+        },
+      },
+    })
+  })
+
+  it('hydrates modern jupyter hidden flags from metadata and persists source toggle', async () => {
+    const wrapper = mountNotebook([
+      {
+        id: 'code-hidden',
+        cell_type: 'code',
+        source: 'print("x")',
+        metadata: {
+          jupyter: {
+            source_hidden: true,
+            outputs_hidden: true,
+          },
+        },
+        execution_count: 1,
+        outputs: [{ output_type: 'stream', name: 'stdout', text: 'x\n' }],
+      },
+    ])
+
+    const cell = wrapper.getComponent(Cell)
+    expect(cell.props('sourceHidden')).toBe(true)
+    expect(cell.props('outputHidden')).toBe(true)
+    expect(wrapper.get('.vuepyter-source-hidden-line').text()).toBe('print("x")')
+    expect(wrapper.get('.vuepyter-source-hidden-line').html()).toContain('<span')
+
+    cell.vm.$emit('toggleSourceVisibility', 0)
+    await wrapper.vm.$nextTick()
+
+    expect(cell.props('sourceHidden')).toBe(false)
+    expect(wrapper.emitted('cellMetadata')?.[0]?.[0]).toEqual({
+      index: 0,
+      metadata: {
+        collapsed: false,
+        inputCollapsed: false,
+        source_hidden: false,
+        jupyter: {
+          source_hidden: false,
+          outputs_hidden: true,
+        },
+      },
+    })
+  })
+
+  it('hydrates hidden flags from VS Code-compatible metadata keys', () => {
+    const wrapper = mountNotebook([
+      {
+        id: 'vscode-hidden',
+        cell_type: 'code',
+        source: '# hidden in vscode\nprint(1)',
+        metadata: {
+          inputCollapsed: true,
+          outputCollapsed: true,
+        },
+        execution_count: 1,
+        outputs: [{ output_type: 'stream', name: 'stdout', text: '1\n' }],
+      },
+    ])
+
+    const cell = wrapper.getComponent(Cell)
+    expect(cell.props('sourceHidden')).toBe(true)
+    expect(cell.props('outputHidden')).toBe(true)
+    expect(wrapper.get('.vuepyter-source-hidden-line').text()).toBe('# hidden in vscode')
+    expect(wrapper.get('.vuepyter-source-hidden-line').html()).toContain('<span')
   })
 
   it('handles hover toolbar actions for run/convert/move/tag/delete', async () => {

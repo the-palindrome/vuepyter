@@ -517,6 +517,16 @@ const onCellSource = (payload: { index: number; source: string }) => {
   notebookModel.setCellSource(cell.id, payload.source)
 }
 
+const onCellMetadata = (payload: { index: number; metadata: Record<string, unknown> }) => {
+  const cell = notebookModel.cells.value[payload.index]
+  if (!cell) {
+    return
+  }
+  notebookModel.updateCell(cell.id, {
+    metadata: payload.metadata,
+  })
+}
+
 const onCellAdd = (payload: { index: number; type: CellType; cell?: NotebookCell }) => {
   if (payload.cell) {
     notebookModel.insertCell(payload.cell, payload.index)
@@ -654,6 +664,7 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         :dark="isDark"
         @update:active-index="activeCellIndex = $event"
         @cell-source="onCellSource"
+        @cell-metadata="onCellMetadata"
         @cell-add="onCellAdd"
         @cell-delete="onCellDelete"
         @cell-move="onCellMove"

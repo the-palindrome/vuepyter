@@ -34,6 +34,7 @@ const emit = defineEmits<{
   cellAdd: [payload: { index: number; type: CellType; cell?: NotebookCell }]
   cellDelete: [payload: { index: number }]
   cellMove: [payload: { from: number; to: number }]
+  cellMetadata: [payload: { index: number; metadata: Record<string, unknown> }]
   cellTag: [payload: { index: number }]
   cellType: [payload: { index: number; type: NotebookCellType }]
   cellSource: [payload: { index: number; source: string }]
@@ -51,6 +52,7 @@ const draggingIndex = ref<number | null>(null)
 const markdownEditById = ref<Record<string, boolean>>({})
 const lineNumbersById = ref<Record<string, boolean>>({})
 const lineNumbersAll = ref<boolean | null>(null)
+const sourceHiddenById = ref<Record<string, boolean>>({})
 const outputHiddenById = ref<Record<string, boolean>>({})
 const outputScrollableById = ref<Record<string, boolean>>({})
 const clipboardCell = ref<NotebookCell | null>(null)
@@ -79,10 +81,30 @@ watch(
     const compact = (store: Record<string, boolean>) =>
       Object.fromEntries(Object.entries(store).filter(([id]) => cellIds.has(id)))
 
-    lineNumbersById.value = compact(lineNumbersById.value)
-    outputHiddenById.value = compact(outputHiddenById.value)
-    outputScrollableById.value = compact(outputScrollableById.value)
-    markdownEditById.value = compact(markdownEditById.value)
+    const nextLineNumbers = compact(lineNumbersById.value)
+    const nextSourceHidden = compact(sourceHiddenById.value)
+    const nextOutputHidden = compact(outputHiddenById.value)
+    const nextOutputScrollable = compact(outputScrollableById.value)
+    const nextMarkdownEdit = compact(markdownEditById.value)
+
+    for (const cell of cells) {
+      if (cell.cell_type !== 'code') {
+        continue
+      }
+
+      if (typeof nextSourceHidden[cell.id] !== 'boolean') {
+        nextSourceHidden[cell.id] = metadataFlag(cell, 'source_hidden')
+      }
+      if (typeof nextOutputHidden[cell.id] !== 'boolean') {
+        nextOutputHidden[cell.id] = metadataFlag(cell, 'outputs_hidden')
+      }
+    }
+
+    lineNumbersById.value = nextLineNumbers
+    sourceHiddenById.value = nextSourceHidden
+    outputHiddenById.value = nextOutputHidden
+    outputScrollableById.value = nextOutputScrollable
+    markdownEditById.value = nextMarkdownEdit
     cellRefs.value = Object.fromEntries(Object.entries(cellRefs.value).filter(([id]) => cellIds.has(id)))
   },
   { deep: true },
@@ -166,11 +188,110 @@ function editorOptionsForCell(cell: NotebookCell): Partial<CodeEditorProps> {
 }
 
 function outputHidden(cell: NotebookCell): boolean {
-  return outputHiddenById.value[cell.id] ?? false
+  if (cell.cell_type !== 'code') {
+    return false
+  }
+  const explicit = outputHiddenById.value[cell.id]
+  if (typeof explicit === 'boolean') {
+    return explicit
+  }
+  return metadataFlag(cell, 'outputs_hidden')
+}
+
+function sourceHidden(cell: NotebookCell): boolean {
+  if (cell.cell_type !== 'code') {
+    return false
+  }
+  const explicit = sourceHiddenById.value[cell.id]
+  if (typeof explicit === 'boolean') {
+    return explicit
+  }
+  return metadataFlag(cell, 'source_hidden')
 }
 
 function outputScrollable(cell: NotebookCell): boolean {
   return outputScrollableById.value[cell.id] ?? true
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  return value as Record<string, unknown>
+}
+
+function metadataRecord(cell: NotebookCell): Record<string, unknown> {
+  return asRecord(cell.metadata)
+}
+
+function jupyterMetadata(cell: NotebookCell): Record<string, unknown> {
+  const metadata = metadataRecord(cell)
+  return asRecord(metadata.jupyter)
+}
+
+function recordBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key]
+  return typeof value === 'boolean' ? value : undefined
+}
+
+function metadataFlag(cell: NotebookCell, key: 'source_hidden' | 'outputs_hidden'): boolean {
+  const metadata = metadataRecord(cell)
+  const jupyter = jupyterMetadata(cell)
+  const jupyterValue = recordBoolean(jupyter, key)
+  if (typeof jupyterValue === 'boolean') {
+    return jupyterValue
+  }
+
+  if (key === 'source_hidden') {
+    const sourceHidden = recordBoolean(metadata, 'source_hidden')
+    if (typeof sourceHidden === 'boolean') {
+      return sourceHidden
+    }
+    const inputCollapsed = recordBoolean(metadata, 'inputCollapsed')
+    if (typeof inputCollapsed === 'boolean') {
+      return inputCollapsed
+    }
+    const collapsed = recordBoolean(metadata, 'collapsed')
+    if (typeof collapsed === 'boolean') {
+      return collapsed
+    }
+    return false
+  }
+
+  const outputsHidden = recordBoolean(metadata, 'outputs_hidden')
+  if (typeof outputsHidden === 'boolean') {
+    return outputsHidden
+  }
+  const outputCollapsed = recordBoolean(metadata, 'outputCollapsed')
+  if (typeof outputCollapsed === 'boolean') {
+    return outputCollapsed
+  }
+  return false
+}
+
+function setHiddenFlagMetadata(
+  cell: NotebookCell,
+  index: number,
+  patch: Partial<{ source_hidden: boolean; outputs_hidden: boolean }>,
+): void {
+  const metadata = { ...metadataRecord(cell) }
+  const jupyter = { ...jupyterMetadata(cell) }
+
+  if (typeof patch.source_hidden === 'boolean') {
+    jupyter.source_hidden = patch.source_hidden
+    // Keep compatibility with editors that persist top-level collapse hints.
+    metadata.source_hidden = patch.source_hidden
+    metadata.inputCollapsed = patch.source_hidden
+    metadata.collapsed = patch.source_hidden
+  }
+  if (typeof patch.outputs_hidden === 'boolean') {
+    jupyter.outputs_hidden = patch.outputs_hidden
+    metadata.outputs_hidden = patch.outputs_hidden
+    metadata.outputCollapsed = patch.outputs_hidden
+  }
+
+  metadata.jupyter = jupyter
+  emit('cellMetadata', { index, metadata })
 }
 
 function pushDeletedCell(cell: NotebookCell, index: number): void {
@@ -390,7 +511,9 @@ const { setMode, onKeydown } = useKeyboard({
     if (!cell || cell.cell_type !== 'code') {
       return
     }
-    outputHiddenById.value[cell.id] = !(outputHiddenById.value[cell.id] ?? false)
+    const next = !outputHidden(cell)
+    outputHiddenById.value[cell.id] = next
+    setHiddenFlagMetadata(cell, activeIndex.value, { outputs_hidden: next })
   },
   onToggleOutputScrolling: () => {
     const cell = currentCell()
@@ -530,6 +653,19 @@ const onCellToolbarDelete = (index: number) => {
   activeIndex.value = index
   deleteCellAt(index)
 }
+
+const onCellToggleSourceVisibility = (index: number) => {
+  if (resolvedReadOnly.value) {
+    return
+  }
+  const cell = props.cells[index]
+  if (!cell || cell.cell_type !== 'code') {
+    return
+  }
+  const next = !sourceHidden(cell)
+  sourceHiddenById.value[cell.id] = next
+  setHiddenFlagMetadata(cell, index, { source_hidden: next })
+}
 </script>
 
 <template>
@@ -554,6 +690,7 @@ const onCellToolbarDelete = (index: number) => {
       :locale="resolvedLocale"
       :dark="resolvedDark"
       :markdown-editing="markdownEditing(cell)"
+      :source-hidden="sourceHidden(cell)"
       :output-hidden="outputHidden(cell)"
       :output-scrollable="outputScrollable(cell)"
       @select="onCellSelect"
@@ -569,6 +706,7 @@ const onCellToolbarDelete = (index: number) => {
       @toolbar-move-down="onCellToolbarMoveDown"
       @toolbar-add-tag="onCellToolbarAddTag"
       @toolbar-delete="onCellToolbarDelete"
+      @toggle-source-visibility="onCellToggleSourceVisibility"
       @drag-start="onCellDragStart"
       @drop="onCellDrop"
       @toggle-markdown-mode="onCellMarkdownMode"

@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 import {
   ArrowDown,
   ArrowUp,
+  Eye,
+  EyeOff,
   FileCode2,
   FileText,
   Play,
@@ -10,6 +12,7 @@ import {
   Trash2,
 } from 'lucide-vue-next'
 import type { CellOutput as NotebookCellOutput, CodeEditorProps, NotebookCell, NotebookCellType } from '../types'
+import { highlightPreviewLine } from '../utils/highlightPreview'
 import CellOutput from './CellOutput.vue'
 import CodeEditor from './CodeEditor.vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
@@ -25,6 +28,7 @@ const props = withDefaults(
     locale?: Record<string, string>
     dark?: boolean
     markdownEditing?: boolean
+    sourceHidden?: boolean
     outputHidden?: boolean
     outputScrollable?: boolean
     totalCells?: number
@@ -37,6 +41,7 @@ const props = withDefaults(
     locale: () => ({}),
     dark: false,
     markdownEditing: false,
+    sourceHidden: false,
     outputHidden: false,
     outputScrollable: true,
     totalCells: 0,
@@ -57,6 +62,7 @@ const emit = defineEmits<{
   toolbarMoveDown: [index: number]
   toolbarAddTag: [index: number]
   toolbarDelete: [index: number]
+  toggleSourceVisibility: [index: number]
   toggleMarkdownMode: [payload: { index: number; editing: boolean }]
   dragStart: [index: number]
   drop: [index: number]
@@ -70,6 +76,7 @@ const resolvedReadOnly = computed(() => props.readOnly ?? false)
 const resolvedMaxOutputHeight = computed(() => props.maxOutputHeight ?? 400)
 const resolvedLocale = computed(() => props.locale ?? {})
 const resolvedDark = computed(() => props.dark ?? false)
+const resolvedSourceHidden = computed(() => props.sourceHidden ?? false)
 const resolvedOutputHidden = computed(() => props.outputHidden ?? false)
 const resolvedOutputScrollable = computed(() => props.outputScrollable ?? true)
 const showMarkdownPreview = computed(() => isMarkdownCell.value && !props.markdownEditing)
@@ -81,6 +88,8 @@ const convertLabel = computed(() =>
   props.cell.cell_type === 'code' ? 'Convert to markdown' : 'Convert to code',
 )
 const convertIcon = computed(() => (convertTargetType.value === 'markdown' ? FileText : FileCode2))
+const sourceVisibilityLabel = computed(() => (resolvedSourceHidden.value ? 'Show source' : 'Hide source'))
+const sourceVisibilityIcon = computed(() => (resolvedSourceHidden.value ? Eye : EyeOff))
 const isFirstCell = computed(() => props.index <= 0)
 const isLastCell = computed(() => props.index >= Math.max(0, (props.totalCells ?? 0) - 1))
 const hasVisibleOutput = computed(() => {
@@ -110,6 +119,12 @@ const executionLabel = computed(() => {
   }
   const count = props.cell.execution_count
   return `[${count ?? '\u00a0'}]:`
+})
+const hiddenSourcePreviewHtml = computed(() => {
+  if (!isCodeCell.value) {
+    return '...'
+  }
+  return highlightPreviewLine(props.cell.source, editorLanguage.value)
 })
 
 const mergedEditorOptions = computed(() => ({
@@ -153,6 +168,13 @@ const onToolbarAddTag = () => {
 
 const onToolbarDelete = () => {
   emit('toolbarDelete', props.index)
+}
+
+const onToggleSourceVisibility = () => {
+  if (!isCodeCell.value) {
+    return
+  }
+  emit('toggleSourceVisibility', props.index)
 }
 
 defineExpose({
@@ -208,6 +230,16 @@ defineExpose({
         <button
           type="button"
           class="vuepyter-cell-action"
+          :disabled="resolvedReadOnly || !isCodeCell"
+          :title="sourceVisibilityLabel"
+          :aria-label="sourceVisibilityLabel"
+          @click="onToggleSourceVisibility"
+        >
+          <component :is="sourceVisibilityIcon" :size="14" :stroke-width="1.9" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class="vuepyter-cell-action"
           :disabled="resolvedReadOnly || isFirstCell"
           title="Move cell up"
           aria-label="Move cell up"
@@ -255,6 +287,10 @@ defineExpose({
         <slot name="markdown-renderer" :cell="cell" :source="cell.source">
           <MarkdownRenderer :source="cell.source" />
         </slot>
+      </div>
+
+      <div v-else-if="isCodeCell && resolvedSourceHidden" class="vuepyter-source-hidden">
+        <code class="vuepyter-source-hidden-line" v-html="hiddenSourcePreviewHtml" />
       </div>
 
       <slot
@@ -416,6 +452,25 @@ defineExpose({
 .vuepyter-markdown-preview {
   min-height: 2rem;
   padding: 0.2rem 0.1rem;
+}
+
+.vuepyter-source-hidden {
+  min-height: 1.25rem;
+  display: flex;
+  align-items: flex-start;
+  padding: 0.32rem 0.1rem 0.08rem;
+}
+
+.vuepyter-source-hidden-line {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre;
+  line-height: 1.1rem;
+  margin: 0;
+  font-family: var(--vuepyter-font-mono);
+  font-size: 0.84rem;
 }
 
 </style>
