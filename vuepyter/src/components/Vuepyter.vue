@@ -424,6 +424,10 @@ const restartRunAll = async () => {
   await executeAllCells()
 }
 
+defineExpose({
+  executeAllCells,
+})
+
 const interrupt = () => {
   const interrupted = kernel.interrupt()
   if (!interrupted) {
