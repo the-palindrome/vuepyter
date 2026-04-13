@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import Cell from '@/components/Cell.vue'
 import Notebook from '@/components/Notebook.vue'
@@ -78,6 +78,11 @@ function mountNotebook(cells: NotebookCell[] = baseCells()) {
       },
     },
   })
+}
+
+async function flushNotebookFocus(): Promise<void> {
+  await nextTick()
+  await nextTick()
 }
 
 describe('components/Notebook keyboard integration', () => {
@@ -228,6 +233,29 @@ describe('components/Notebook keyboard integration', () => {
         },
       },
     })
+  })
+
+  it('returns focus to the notebook when edit mode exits with Escape', async () => {
+    const wrapper = mountNotebook()
+    const notebook = wrapper.get('.vuepyter-notebook')
+    const focusSpy = vi.spyOn(notebook.element as HTMLDivElement, 'focus')
+
+    wrapper.getComponent(Cell).vm.$emit('exitEditMode', 0)
+    await flushNotebookFocus()
+
+    expect(focusSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns focus to the notebook after Shift+Enter advances to the next cell', async () => {
+    const wrapper = mountNotebook()
+    const notebook = wrapper.get('.vuepyter-notebook')
+    const focusSpy = vi.spyOn(notebook.element as HTMLDivElement, 'focus')
+
+    wrapper.getComponent(Cell).vm.$emit('execute', { index: 0, advance: true })
+    await flushNotebookFocus()
+
+    expect(focusSpy).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('cellExecute')?.[0]?.[0]).toEqual({ index: 0, advance: true })
   })
 
   it('hydrates modern jupyter hidden flags from metadata and persists source toggle', async () => {

@@ -161,6 +161,18 @@ async function focusActiveEditor(): Promise<void> {
   cellRefs.value[cell.id]?.focusEditor?.()
 }
 
+async function focusNotebook(): Promise<void> {
+  await nextTick()
+  const root = rootRef.value
+  if (!root) {
+    return
+  }
+  root.focus({ preventScroll: true })
+  if (typeof document !== 'undefined' && document.activeElement !== root) {
+    setTimeout(() => root.focus({ preventScroll: true }), 0)
+  }
+}
+
 function blurActiveEditor(): void {
   const cell = currentCell()
   if (!cell) {
@@ -562,6 +574,13 @@ const onCellExecute = (payload: { index: number; advance: boolean; insertBelow?:
     markdownEditById.value[cell.id] = false
     blurActiveEditor()
     setMode('command')
+    void focusNotebook()
+  }
+
+  if (cell?.cell_type === 'code' && (payload.advance || payload.insertBelow)) {
+    blurActiveEditor()
+    setMode('command')
+    void focusNotebook()
   }
 
   activeIndex.value = payload.index
@@ -573,6 +592,20 @@ const onCellExecute = (payload: { index: number; advance: boolean; insertBelow?:
   if (payload.advance) {
     activeIndex.value = Math.min(payload.index + 1, props.cells.length)
   }
+}
+
+const onCellExitEditMode = (index: number) => {
+  const cell = props.cells[index]
+  if (!cell) {
+    return
+  }
+  activeIndex.value = index
+  if (cell.cell_type === 'markdown') {
+    markdownEditById.value[cell.id] = false
+  }
+  blurActiveEditor()
+  setMode('command')
+  void focusNotebook()
 }
 
 const onCellDragStart = (index: number) => {
@@ -696,6 +729,7 @@ const onCellToggleSourceVisibility = (index: number) => {
       @select="onCellSelect"
       @update-source="emit('cellSource', $event)"
       @execute="onCellExecute"
+      @exit-edit-mode="onCellExitEditMode"
       @focus="() => setMode('edit')"
       @blur="() => setMode('command')"
       @navigate-up="() => onCellSelect(Math.max(0, index - 1))"

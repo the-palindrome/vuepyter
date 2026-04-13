@@ -25,6 +25,7 @@ interface CodemirrorOptions {
   onUpdate: (value: string) => void
   onExecute?: (advance: boolean) => void
   onSplitCell?: (cursorOffset: number) => void
+  onExitEditMode?: () => void
   onFocus?: () => void
   onBlur?: () => void
   onCursor?: (cursor: { line: number; col: number }) => void
@@ -91,6 +92,10 @@ export function useCodemirror(containerRef: Ref<HTMLElement | null>, options: Co
       {
         key: 'Escape',
         run: (editorView) => {
+          if (options.onExitEditMode) {
+            options.onExitEditMode()
+            return true
+          }
           ;(editorView.contentDOM as HTMLElement).blur()
           return true
         },

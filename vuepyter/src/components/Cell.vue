@@ -52,6 +52,7 @@ const emit = defineEmits<{
   select: [index: number]
   updateSource: [payload: { index: number; source: string }]
   execute: [payload: { index: number; advance: boolean }]
+  exitEditMode: [index: number]
   focus: [index: number]
   blur: [index: number]
   navigateUp: [index: number]
@@ -314,6 +315,7 @@ defineExpose({
           :dark="resolvedDark"
           @update:model-value="onSourceUpdate"
           @execute="onExecute"
+          @exit="emit('exitEditMode', index)"
           @focus="emit('focus', index)"
           @blur="emit('blur', index)"
           @navigate-up="emit('navigateUp', index)"

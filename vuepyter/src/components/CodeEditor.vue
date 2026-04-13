@@ -36,6 +36,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: string]
   execute: [advance: boolean]
   split: [cursorOffset: number]
+  exit: []
   focus: []
   blur: []
   cursor: [{ line: number; col: number }]
@@ -72,6 +73,7 @@ const { focus, blur } = useCodemirror(containerRef, {
   onUpdate: (value) => emit('update:modelValue', value),
   onExecute: (advance) => emit('execute', advance),
   onSplitCell: (cursorOffset) => emit('split', cursorOffset),
+  onExitEditMode: () => emit('exit'),
   onFocus: () => emit('focus'),
   onBlur: () => emit('blur'),
   onCursor: (cursor) => emit('cursor', cursor),
