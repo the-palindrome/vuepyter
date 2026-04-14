@@ -8,6 +8,8 @@ This folder contains simple usage examples for `vuepyter`.
 - `quickstart/quickstart.ipynb` - notebook used by the quickstart page.
 - `game-of-life/game-of-life.html` - two-panel game-of-life starter layout with an empty left pane.
 - `game-of-life/game-of-life.ipynb` - blank notebook used by the game-of-life example.
+- `cart-pole/cart-pole.html` - two-panel real-time inverted-pendulum example with a minimalist physics visualization.
+- `cart-pole/cart-pole.ipynb` - notebook used by the cart-pole example, including a simple stabilizing controller.
 
 ## Run the standalone HTML example
 
