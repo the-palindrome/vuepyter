@@ -233,6 +233,8 @@ describe('components/Notebook keyboard integration', () => {
         },
       },
     })
+
+    nowSpy.mockRestore()
   })
 
   it('returns focus to the notebook when edit mode exits with Escape', async () => {
@@ -362,7 +364,7 @@ describe('components/Notebook keyboard integration', () => {
     ])
 
     const firstCell = wrapper.findAllComponents(Cell)[0]
-    firstCell.vm.$emit('toggleMarkdownMode', { index: 0, editing: true })
+    await firstCell.get('.vuepyter-markdown-preview').trigger('dblclick')
     await wrapper.vm.$nextTick()
     expect(wrapper.findAll('.code-editor-stub').length).toBeGreaterThan(0)
 
@@ -373,6 +375,41 @@ describe('components/Notebook keyboard integration', () => {
     const cellsAfter = wrapper.findAllComponents(Cell)
     expect(cellsAfter[0]?.props('markdownEditing')).toBe(false)
     expect(cellsAfter[1]?.props('active')).toBe(true)
+  })
+
+  it('ignores mutating cell toolbar and split actions in read-only mode', async () => {
+    const wrapper = mountNotebook(baseCells())
+    const cells = wrapper.findAllComponents(Cell)
+
+    await wrapper.setProps({ readOnly: true })
+
+    cells[0].vm.$emit('toolbarConvert', { index: 0, type: 'markdown' })
+    cells[0].vm.$emit('toolbarMoveDown', 0)
+    cells[1].vm.$emit('toolbarMoveUp', 1)
+    cells[0].vm.$emit('toolbarAddTag', 0)
+    cells[0].vm.$emit('toolbarDelete', 0)
+    cells[0].vm.$emit('toggleSourceVisibility', 0)
+    cells[0].vm.$emit('splitCell', { index: 0, cursorOffset: 3 })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('cellType')).toBeUndefined()
+    expect(wrapper.emitted('cellMove')).toBeUndefined()
+    expect(wrapper.emitted('cellTag')).toBeUndefined()
+    expect(wrapper.emitted('cellDelete')).toBeUndefined()
+    expect(wrapper.emitted('cellMetadata')).toBeUndefined()
+    expect(wrapper.emitted('cellAdd')).toBeUndefined()
+  })
+
+  it('moves cells through drag and drop', async () => {
+    const wrapper = mountNotebook(baseCells())
+    const cells = wrapper.findAllComponents(Cell)
+
+    cells[0].vm.$emit('dragStart', 0)
+    cells[1].vm.$emit('drop', 1)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.emitted('cellMove')?.[0]?.[0]).toEqual({ from: 0, to: 1 })
+    expect(wrapper.findAllComponents(Cell)[1]?.props('active')).toBe(true)
   })
 
   it('does not render a preview button in markdown edit mode', async () => {

@@ -23,7 +23,9 @@ export type {
   KeymapConfig,
   NotebookCell,
   NotebookDocument,
+  SerializedNotebookDocument,
   PyodideInterface,
+  VuepyterModelValue,
   VuepyterProps,
 } from './types'
 

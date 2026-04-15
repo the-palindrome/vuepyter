@@ -17,14 +17,15 @@ import type {
   KernelUpdateMode,
   KeymapConfig,
   NotebookCell,
-  NotebookDocument,
+  SerializedNotebookDocument,
+  VuepyterModelValue,
 } from '../types'
 import EditorBar from './EditorBar.vue'
 import Notebook from './Notebook.vue'
 
 const props = withDefaults(
   defineProps<{
-    modelValue?: NotebookDocument | null
+    modelValue?: VuepyterModelValue | null
     pyodideUrl?: string
     pyodidePackages?: string[]
     pyodideInitCode?: string
@@ -60,7 +61,7 @@ const props = withDefaults(
 )
 
 const emit = defineEmits<{
-  'update:modelValue': [document: NotebookDocument]
+  'update:modelValue': [document: SerializedNotebookDocument]
   ready: [payload: { pyodide: unknown; workspace: { value: Record<string, unknown> } }]
   'cell:execute': [payload: { cellId: string; source: string }]
   'cell:complete': [payload: { cellId: string; outputs: unknown[]; error?: Error }]
@@ -180,9 +181,9 @@ const kernelName = computed(() => props.locale?.kernelName ?? 'Python (Pyodide)'
 let emitDebounceTimer: ReturnType<typeof setTimeout> | null = null
 let autosaveTimer: ReturnType<typeof setInterval> | null = null
 
-const serializeNotebook = () => notebookModel.serialize() as unknown as NotebookDocument
+const serializeNotebook = (): SerializedNotebookDocument => notebookModel.serialize()
 
-const flushModelValue = (nextDocument?: NotebookDocument) => {
+const flushModelValue = (nextDocument?: SerializedNotebookDocument) => {
   pendingAutosave.value = false
   emit('update:modelValue', nextDocument ?? serializeNotebook())
 }
@@ -487,7 +488,7 @@ const resolveDownloadFilename = () => {
   return /\.ipynb$/iu.test(sanitized) ? sanitized : `${sanitized}.ipynb`
 }
 
-const downloadNotebook = (documentData: NotebookDocument) => {
+const downloadNotebook = (documentData: SerializedNotebookDocument) => {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return
   }

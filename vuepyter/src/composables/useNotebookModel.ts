@@ -7,6 +7,7 @@ import type {
   OutputMimeBundle,
   UseNotebookModelOptions,
   UseNotebookModelReturn,
+  VuepyterModelValue,
 } from '@/types'
 import {
   createNotebookCell,
@@ -136,7 +137,7 @@ export function useNotebookModel(options: UseNotebookModelOptions = {}): UseNote
     activeCellId.value = notebook.value.cells[0]?.id ?? null
   }
 
-  function setNotebook(value: NotebookDocument | null | undefined): void {
+  function setNotebook(value: VuepyterModelValue | null | undefined): void {
     notebook.value = normalizeNotebookDocument(value ?? createNotebookDocument())
     ensureActiveCell()
   }

@@ -17,14 +17,27 @@ const EditorBarStub = defineComponent({
   },
   emits: [
     'add-cell',
+    'add-cell-above',
     'delete-active',
     'set-cell-type',
     'run-active',
+    'run-and-advance',
     'run-all',
-    'set-kernel-update-mode',
     'restart-kernel',
+    'restart-run-all',
+    'set-kernel-update-mode',
     'interrupt',
     'clear-outputs',
+    'copy-active',
+    'cut-active',
+    'paste-below',
+    'paste-above',
+    'move-cell-up',
+    'move-cell-down',
+    'duplicate-active',
+    'toggle-trust',
+    'show-shortcuts',
+    'rename-notebook',
   ],
   template: '<div class="editor-bar-stub" />',
 })
@@ -43,11 +56,16 @@ const NotebookStub = defineComponent({
   emits: [
     'update:active-index',
     'cell-source',
+    'cell-metadata',
     'cell-add',
     'cell-delete',
     'cell-move',
     'cell-tag',
+    'cell-type',
     'cell-execute',
+    'interrupt',
+    'restart-kernel',
+    'show-shortcuts',
     'save',
   ],
   template: '<div class="notebook-stub" />',
@@ -57,6 +75,7 @@ interface NotebookModelMock {
   notebook: ReturnType<typeof ref<Record<string, unknown>>>
   cells: ReturnType<typeof computed<Array<Record<string, unknown>>>>
   addCell: ReturnType<typeof vi.fn>
+  insertCell: ReturnType<typeof vi.fn>
   removeCell: ReturnType<typeof vi.fn>
   setCellType: ReturnType<typeof vi.fn>
   updateCell: ReturnType<typeof vi.fn>
@@ -124,6 +143,10 @@ function createNotebookModelMock(): NotebookModelMock {
         metadata: {},
         ...(type === 'code' ? { execution_count: null, outputs: [] } : {}),
       }
+      notebook.value.cells.splice(Math.max(0, index), 0, cell)
+      return cell
+    }),
+    insertCell: vi.fn((cell: Record<string, unknown>, index: number) => {
       notebook.value.cells.splice(Math.max(0, index), 0, cell)
       return cell
     }),
@@ -450,5 +473,250 @@ describe('components/Vuepyter core interactions', () => {
 
     expect(kernel.executeCell).not.toHaveBeenCalled()
     expect(notebookModel.addCell).toHaveBeenCalledWith(1, 'code')
+  })
+
+  it('ignores missing execute targets and advances to the next existing cell', async () => {
+    const { Vuepyter, notebookModel, kernel } = await loadVuepyterWithMocks()
+
+    const wrapper = mount(Vuepyter as never, {
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+    })
+
+    const notebook = wrapper.getComponent(NotebookStub)
+    notebook.vm.$emit('cell-execute', { index: 99, advance: true })
+    notebook.vm.$emit('cell-execute', { index: 0, advance: true })
+    await flushAsync()
+
+    expect(kernel.executeCell).toHaveBeenCalledTimes(1)
+    expect(kernel.executeCell).toHaveBeenCalledWith(expect.objectContaining({
+      cellId: 'code-1',
+    }))
+    expect(notebookModel.addCell).not.toHaveBeenCalled()
+  })
+
+  it('saves notebooks with sanitized filenames and preserves metadata edits', async () => {
+    vi.useFakeTimers()
+    const { Vuepyter, notebookModel } = await loadVuepyterWithMocks()
+    const createObjectURL = vi.fn(() => 'blob:vuepyter-test')
+    const revokeObjectURL = vi.fn()
+    const clickedDownloads: string[] = []
+    const anchorClickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function mockAnchorClick(this: HTMLAnchorElement) {
+        clickedDownloads.push(this.download)
+      })
+    const originalCreateObjectURL = URL.createObjectURL
+    const originalRevokeObjectURL = URL.revokeObjectURL
+
+    URL.createObjectURL = createObjectURL
+    URL.revokeObjectURL = revokeObjectURL
+
+    notebookModel.notebook.value = {
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {
+        title: 'Folder/Name.ipynb',
+        trusted: false,
+      },
+      cells: [
+        {
+          id: 'code-1',
+          cell_type: 'code',
+          source: 'print("hi")',
+          metadata: {},
+          execution_count: null,
+          outputs: [],
+        },
+      ],
+    }
+
+    try {
+      const wrapper = mount(Vuepyter as never, {
+        props: {
+          modelValue: notebookModel.notebook.value as never,
+          theme: 'dark',
+          kernelUpdateMode: 'always-live',
+        },
+        global: {
+          stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+        },
+      })
+
+      await nextTick()
+      expect(wrapper.find('.vuepyter-root').attributes('style')).toContain('--vuepyter-bg: #0f172a;')
+      expect(wrapper.getComponent(NotebookStub).props('dark')).toBe(true)
+      expect((wrapper.vm as { getKernelUpdateMode: () => string }).getKernelUpdateMode()).toBe('always-live')
+
+      wrapper.getComponent(EditorBarStub).vm.$emit('rename-notebook', '   ')
+      await flushAsync()
+      expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+      wrapper.getComponent(EditorBarStub).vm.$emit('rename-notebook', 'Renamed/Notebook.ipynb')
+      wrapper.getComponent(EditorBarStub).vm.$emit('toggle-trust')
+      wrapper.getComponent(NotebookStub).vm.$emit('save')
+      await flushAsync()
+
+      const updates = wrapper.emitted('update:modelValue')
+      expect(updates?.length ?? 0).toBeGreaterThan(0)
+      const latest = updates?.at(-1)?.[0] as {
+        metadata: { title?: string; trusted?: boolean }
+      }
+      expect(latest.metadata.title).toBe('Renamed/Notebook.ipynb')
+      expect(latest.metadata.trusted).toBe(true)
+      expect(createObjectURL).toHaveBeenCalledTimes(1)
+      expect(anchorClickSpy).toHaveBeenCalledTimes(1)
+      expect(clickedDownloads[0]).toBe('Renamed-Notebook.ipynb')
+      expect(notebookModel.serialize).toHaveBeenCalledTimes(1)
+
+      vi.advanceTimersByTime(0)
+      await flushAsync()
+      expect(revokeObjectURL).toHaveBeenCalledTimes(1)
+    } finally {
+      URL.createObjectURL = originalCreateObjectURL
+      URL.revokeObjectURL = originalRevokeObjectURL
+      anchorClickSpy.mockRestore()
+    }
+  })
+
+  it('covers clipboard, movement, and read-only guards', async () => {
+    const interactive = await loadVuepyterWithMocks()
+    const wrapper = mount(interactive.Vuepyter as never, {
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+    })
+
+    const bar = wrapper.getComponent(EditorBarStub)
+    const notebook = wrapper.getComponent(NotebookStub)
+
+    bar.vm.$emit('copy-active')
+    bar.vm.$emit('paste-below')
+    bar.vm.$emit('paste-above')
+    bar.vm.$emit('duplicate-active')
+    bar.vm.$emit('add-cell-above')
+    notebook.vm.$emit('update:active-index', 1)
+    bar.vm.$emit('move-cell-up')
+    notebook.vm.$emit('update:active-index', 0)
+    bar.vm.$emit('move-cell-down')
+    bar.vm.$emit('cut-active')
+    bar.vm.$emit('delete-active')
+    await flushAsync()
+
+    expect(interactive.notebookModel.addCell).toHaveBeenCalledWith(2, 'code')
+    expect(interactive.notebookModel.insertCell).toHaveBeenCalledTimes(3)
+    const insertedCells = interactive.notebookModel.insertCell.mock.calls.map(([cell]) => cell as {
+      cell_type: string
+      id: string
+      execution_count: number | null
+      outputs: unknown[]
+    })
+    expect(insertedCells.every((cell) => cell.id !== 'code-1')).toBe(true)
+    expect(insertedCells[0]).toMatchObject({
+      cell_type: 'code',
+      execution_count: null,
+      outputs: [],
+    })
+    expect(interactive.notebookModel.moveCell).toHaveBeenCalledWith(1, 0)
+    expect(interactive.notebookModel.moveCell).toHaveBeenCalledWith(0, 1)
+    expect(interactive.notebookModel.removeCell).toHaveBeenCalled()
+
+    const readOnly = await loadVuepyterWithMocks()
+    const readOnlyWrapper = mount(readOnly.Vuepyter as never, {
+      props: { readOnly: true },
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+    })
+
+    const readOnlyBar = readOnlyWrapper.getComponent(EditorBarStub)
+    readOnlyBar.vm.$emit('delete-active')
+    readOnlyBar.vm.$emit('set-cell-type', 'raw')
+    readOnlyBar.vm.$emit('cut-active')
+    readOnlyBar.vm.$emit('paste-below')
+    readOnlyBar.vm.$emit('paste-above')
+    readOnlyBar.vm.$emit('move-cell-up')
+    readOnlyBar.vm.$emit('move-cell-down')
+    await flushAsync()
+
+    expect(readOnly.notebookModel.removeCell).not.toHaveBeenCalled()
+    expect(readOnly.notebookModel.setCellType).not.toHaveBeenCalled()
+    expect(readOnly.notebookModel.insertCell).not.toHaveBeenCalled()
+    expect(readOnly.notebookModel.moveCell).not.toHaveBeenCalled()
+  })
+
+  it('flushes pending notebook changes on the autosave interval', async () => {
+    vi.useFakeTimers()
+    const { Vuepyter, notebookModel } = await loadVuepyterWithMocks()
+
+    const wrapper = mount(Vuepyter as never, {
+      props: {
+        autosaveInterval: 50,
+      },
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+    })
+
+    notebookModel.notebook.value = {
+      ...(notebookModel.notebook.value as Record<string, unknown>),
+      metadata: {
+        autosaved: true,
+      },
+    }
+
+    await nextTick()
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    vi.advanceTimersByTime(50)
+    await flushAsync()
+
+    expect(wrapper.emitted('update:modelValue')).toHaveLength(1)
+    expect(notebookModel.serialize).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces execution failures, restart, and interrupt errors', async () => {
+    const { Vuepyter, notebookModel, kernel } = await loadVuepyterWithMocks()
+    kernel.executeCell.mockResolvedValueOnce({
+      executionCount: 2,
+      outputs: [{ output_type: 'stream', name: 'stdout', text: 'boom\n', data: {} }],
+      error: new Error('boom'),
+    })
+    kernel.interrupt.mockReturnValueOnce(false)
+
+    const wrapper = mount(Vuepyter as never, {
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+    })
+
+    const bar = wrapper.getComponent(EditorBarStub)
+    const notebook = wrapper.getComponent(NotebookStub)
+
+    notebook.vm.$emit('cell-execute', { index: 0, advance: false, insertBelow: true })
+    bar.vm.$emit('restart-kernel')
+    bar.vm.$emit('restart-run-all')
+    bar.vm.$emit('interrupt')
+    bar.vm.$emit('show-shortcuts')
+    await flushAsync()
+
+    expect(kernel.executeCell).toHaveBeenCalledWith(expect.objectContaining({
+      cellId: 'code-1',
+      source: 'print("hi")',
+    }))
+    expect(notebookModel.addCell).toHaveBeenCalledWith(1, 'code')
+    expect(notebookModel.resetExecutionState).toHaveBeenCalledTimes(2)
+    expect(kernel.restart).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('cell:complete')?.[0]?.[0]).toMatchObject({
+      cellId: 'code-1',
+      outputs: expect.any(Array),
+      error: expect.any(Error),
+    })
+    expect(wrapper.emitted('error')?.[0]?.[0]).toEqual({
+      type: 'kernel:interrupt',
+      message: 'Kernel interrupt is not available in this environment.',
+    })
+    expect(wrapper.emitted('shortcuts:help')).toHaveLength(1)
   })
 })

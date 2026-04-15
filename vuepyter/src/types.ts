@@ -142,6 +142,8 @@ export interface SerializedNotebookDocument extends Omit<NotebookDocument, 'cell
   cells: SerializedNotebookCell[]
 }
 
+export type VuepyterModelValue = NotebookDocument | SerializedNotebookDocument
+
 export interface CodeEditorProps {
   modelValue?: string
   language?: 'python' | 'markdown' | 'raw'
@@ -248,7 +250,7 @@ export interface VuepyterLocale {
 export type VuepyterTheme = 'light' | 'dark' | ThemeVariables
 
 export interface VuepyterProps {
-  modelValue?: NotebookDocument | null
+  modelValue?: VuepyterModelValue | null
   pyodideUrl?: string
   pyodidePackages?: string[]
   pyodideInitCode?: string
@@ -351,7 +353,7 @@ export interface UseVuepyterProvideOptions {
 }
 
 export interface UseNotebookModelOptions {
-  modelValue?: MaybeRefOrGetter<NotebookDocument | null | undefined>
+  modelValue?: MaybeRefOrGetter<VuepyterModelValue | null | undefined>
   allowedCellTypes?: MaybeRefOrGetter<NotebookCellType[] | undefined>
 }
 
@@ -360,7 +362,7 @@ export interface UseNotebookModelReturn {
   cells: ComputedRef<NotebookCell[]>
   activeCellId: Ref<string | null>
   activeCellIndex: ComputedRef<number>
-  setNotebook: (value: NotebookDocument | null | undefined) => void
+  setNotebook: (value: VuepyterModelValue | null | undefined) => void
   setActiveCellId: (cellId: string | null) => void
   setActiveCellIndex: (index: number) => void
   createCell: (cellType?: NotebookCellType, overrides?: Partial<NotebookCell>) => NotebookCell
