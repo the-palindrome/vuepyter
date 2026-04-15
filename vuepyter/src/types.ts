@@ -290,6 +290,7 @@ export interface PyodideInterface {
 
 export interface PyodideLoaderOptions {
   indexURL?: string
+  packages?: string[]
 }
 
 export type LoadPyodideFn = (options?: PyodideLoaderOptions) => Promise<PyodideInterface>

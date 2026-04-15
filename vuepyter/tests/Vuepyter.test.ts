@@ -82,7 +82,9 @@ const EditorBarStub = defineComponent({
 
 describe('Vuepyter', () => {
   it('initializes kernel and emits ready', async () => {
-    vi.stubGlobal('loadPyodide', vi.fn(async () => createFakePyodide()))
+    const fake = createFakePyodide()
+    const loadPyodide = vi.fn(async () => fake)
+    vi.stubGlobal('loadPyodide', loadPyodide)
 
     const wrapper = mount(Vuepyter, {
       global: {
@@ -96,6 +98,12 @@ describe('Vuepyter', () => {
     const ready = await waitForEvent(() => wrapper.emitted('ready'))
     expect(ready).toBeTruthy()
     expect(wrapper.emitted('ready')?.length).toBe(1)
+    expect(loadPyodide).toHaveBeenCalledWith({
+      indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.3/full/',
+      packages: ['micropip'],
+    })
+    expect(fake.loadPackage).not.toHaveBeenCalled()
+    expect(fake.runPythonAsync).toHaveBeenCalledWith('import micropip')
   })
 
   it('handles cell execute and save flows with serialized model output', async () => {

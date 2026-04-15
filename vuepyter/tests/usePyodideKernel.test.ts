@@ -56,6 +56,12 @@ describe('usePyodideKernel', () => {
     expect(kernel.workspace.value).toEqual({ visible: 42 })
     expect(onReady).toHaveBeenCalledTimes(1)
     expect(loadPyodide).toHaveBeenCalledTimes(1)
+    expect(loadPyodide).toHaveBeenCalledWith({
+      indexURL: 'https://example.com/',
+      packages: ['micropip'],
+    })
+    expect(fake.loadPackage).not.toHaveBeenCalled()
+    expect(fake.runPythonAsync).toHaveBeenCalledWith('import micropip')
   })
 
   it('queues execution requests sequentially', async () => {
@@ -71,6 +77,9 @@ describe('usePyodideKernel', () => {
     const kernel = usePyodideKernel({
       pyodideUrl: 'https://example.com/pyodide.js',
     })
+
+    await kernel.initialize()
+    order.length = 0
 
     const first = kernel.executeCell({ source: 'one' })
     const second = kernel.executeCell({ source: 'two' })

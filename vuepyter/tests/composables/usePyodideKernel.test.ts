@@ -75,7 +75,7 @@ describe('composables/usePyodideKernel', () => {
     vi.unstubAllGlobals()
   })
 
-  it('initializes pyodide, installs packages/init code, and syncs workspace', async () => {
+  it('initializes pyodide, preloads micropip, installs packages/init code, and syncs workspace', async () => {
     const instance = createMockPyodide()
     const loadPyodide = vi.fn(async () => instance)
     vi.stubGlobal('loadPyodide', loadPyodide)
@@ -93,17 +93,58 @@ describe('composables/usePyodideKernel', () => {
     expect(resolved).toBe(instance)
     expect(loadPyodide).toHaveBeenCalledWith({
       indexURL: 'https://cdn.example.test/pyodide/v1/',
+      packages: ['micropip'],
     })
-    expect(instance.loadPackage).toHaveBeenCalledWith('micropip')
+    expect(instance.loadPackage).not.toHaveBeenCalled()
+    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(1, 'import micropip')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(
-      1,
-      'import micropip\nawait micropip.install(["numpy","pandas"])',
+      2,
+      'await micropip.install(["numpy","pandas"])',
     )
-    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(2, 'x = 1')
+    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(3, 'x = 1')
     expect(kernel.status.value).toBe('ready')
     expect(kernel.isReady.value).toBe(true)
     expect(kernel.workspace.value).toEqual({ visible: 7 })
     expect(onReady).toHaveBeenCalledTimes(1)
+  })
+
+  it('preloads micropip even when no extra packages are requested', async () => {
+    const instance = createMockPyodide()
+    const loadPyodide = vi.fn(async () => instance)
+    vi.stubGlobal('loadPyodide', loadPyodide)
+
+    const kernel = usePyodideKernel()
+
+    await kernel.initialize()
+
+    expect(loadPyodide).toHaveBeenCalledWith({
+      indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.27.3/full/',
+      packages: ['micropip'],
+    })
+    expect(instance.loadPackage).not.toHaveBeenCalled()
+    expect(instance.runPythonAsync).toHaveBeenCalledTimes(1)
+    expect(instance.runPythonAsync).toHaveBeenCalledWith('import micropip')
+  })
+
+  it('falls back to explicit micropip loading when bootstrap packages are not importable yet', async () => {
+    const missingMicropipError = new Error("No module named 'micropip'")
+    const instance = createMockPyodide()
+    instance.runPythonAsync.mockImplementation(async (source: string) => {
+      if (source === 'import micropip' && instance.loadPackage.mock.calls.length === 0) {
+        throw missingMicropipError
+      }
+      return undefined
+    })
+
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+
+    const kernel = usePyodideKernel()
+
+    await kernel.initialize()
+
+    expect(instance.loadPackage).toHaveBeenCalledWith('micropip')
+    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(1, 'import micropip')
+    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(2, 'import micropip')
   })
 
   it('executes a cell with stdout/stderr capture and execute_result output', async () => {

@@ -172,6 +172,42 @@ function formatErrorOutput(error: unknown): ErrorOutput {
   }
 }
 
+function isModuleNotFoundError(error: unknown, moduleName: string): boolean {
+  const message = asError(error).message
+  return message.includes(`No module named '${moduleName}'`) || message.includes(`No module named "${moduleName}"`)
+}
+
+async function loadMicropip(pyodide: PyodideInterface): Promise<void> {
+  try {
+    await pyodide.runPythonAsync('import micropip')
+    return
+  } catch (error) {
+    if (!isModuleNotFoundError(error, 'micropip')) {
+      throw error
+    }
+  }
+
+  if (typeof pyodide.loadPackage === 'function') {
+    await pyodide.loadPackage('micropip')
+  } else {
+    await pyodide.runPythonAsync(
+      'import pyodide_js\nawait pyodide_js.loadPackage("micropip")',
+    )
+  }
+
+  try {
+    await pyodide.runPythonAsync('import micropip')
+  } catch (error) {
+    if (!isModuleNotFoundError(error, 'micropip')) {
+      throw error
+    }
+
+    await pyodide.runPythonAsync(
+      'import pyodide_js\nawait pyodide_js.loadPackage("micropip")\nimport micropip',
+    )
+  }
+}
+
 async function installPyodidePackages(
   pyodide: PyodideInterface,
   packages: string[],
@@ -180,14 +216,8 @@ async function installPyodidePackages(
     return
   }
 
-  if (typeof pyodide.loadPackage === 'function') {
-    await pyodide.loadPackage('micropip')
-  }
-
   const encodedPackages = JSON.stringify(packages)
-  await pyodide.runPythonAsync(
-    `import micropip\nawait micropip.install(${encodedPackages})`,
-  )
+  await pyodide.runPythonAsync(`await micropip.install(${encodedPackages})`)
 }
 
 function noop(): void {}
@@ -386,8 +416,10 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         const loadPyodide = await resolveLoadPyodide(pyodideUrl)
         const instance = await loadPyodide({
           indexURL: deriveIndexUrl(pyodideUrl),
+          packages: ['micropip'],
         })
 
+        await loadMicropip(instance)
         await installPyodidePackages(instance, options.pyodidePackages ?? [])
         if (options.pyodideInitCode?.trim()) {
           await instance.runPythonAsync(options.pyodideInitCode)
