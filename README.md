@@ -44,5 +44,5 @@ npm run release:check
 The npm package is published from the `vuepyter/` subdirectory.
 
 - Pull requests run the package test suite, build, and `npm pack --dry-run` in CI.
-- Releases are automated from `.github/workflows/release.yml` on git tags matching `v*` or `vuepyter-v*`.
+- Releases are automated from `.github/workflows/release.yml` on pushes to `main`.
 - The release workflow uses npm trusted publishing with GitHub Actions OIDC and publishes from `vuepyter/`.
