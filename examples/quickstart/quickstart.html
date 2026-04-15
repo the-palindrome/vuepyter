@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vuepyter Quickstart</title>
+  <link rel="stylesheet" href="../../vuepyter/dist/vuepyter.css" />
+  <style>
+    :root {
+      --app-gap: 0.75rem;
+      --app-pad: 0.75rem;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    #app {
+      height: 100%;
+    }
+
+    .page {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: var(--left-pane-width, 380px) 10px minmax(0, 1fr);
+      gap: var(--app-gap);
+      padding: var(--app-pad);
+      box-sizing: border-box;
+    }
+
+    .left-pane {
+      display: block;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .right-pane {
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .editor-fill {
+      height: 100%;
+    }
+
+    .splitter {
+      position: relative;
+      border-radius: 999px;
+      background: #d1d5db;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    .splitter::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 2px;
+      height: 40px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: #9ca3af;
+    }
+
+    .left-pane-card {
+      border-radius: 0.7rem;
+      background: #ffffff;
+      padding: 0.9rem 1rem;
+      border: 0;
+      min-height: 0;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+      height: 100%;
+      box-sizing: border-box;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      gap: 0.65rem;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.35rem;
+      line-height: 1.2;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 0.95rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: #374151;
+    }
+
+    pre {
+      margin: 0;
+      min-height: 0;
+      height: 100%;
+      overflow-y: auto;
+      overflow-x: hidden;
+      font-size: 0.8rem;
+      line-height: 1.45;
+      padding: 0.7rem;
+      border-radius: 0.45rem;
+      background: #ffffff;
+      border: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    body.is-resizing,
+    body.is-resizing * {
+      user-select: none;
+      cursor: col-resize !important;
+    }
+
+    @media (max-width: 960px) {
+      .page {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+
+      .splitter {
+        display: none;
+      }
+
+      .left-pane {
+        display: block;
+      }
+
+      pre {
+        height: 240px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    import { createApp, ref, computed, onBeforeUnmount, onMounted } from 'vue'
+    import { Vuepyter } from '/vuepyter/dist/index.mjs'
+
+    const QUICKSTART_NOTEBOOK_URL = './quickstart.ipynb'
+
+    const app = createApp({
+      components: {
+        Vuepyter,
+      },
+      setup() {
+        const notebook = ref({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {},
+          cells: [],
+        })
+        const notebookLoaded = ref(false)
+
+        const notebookJson = computed(() =>
+          notebookLoaded.value
+            ? JSON.stringify(notebook.value, null, 2)
+            : 'Loading quickstart notebook...',
+        )
+
+        const editorTheme = {
+          '--vuepyter-bg': '#ffffff',
+          '--vuepyter-cell-bg': '#ffffff',
+        }
+        const leftPaneWidth = ref(380)
+        const resizing = ref(false)
+
+        function clamp(value, min, max) {
+          return Math.min(max, Math.max(min, value))
+        }
+
+        function calculateBounds() {
+          const totalWidth = window.innerWidth - 2 * 12
+          const minLeft = 280
+          const minRight = 420
+          const maxLeft = Math.max(minLeft, totalWidth - minRight)
+          return { minLeft, maxLeft }
+        }
+
+        function onPointerMove(event) {
+          if (!resizing.value || window.innerWidth <= 960) {
+            return
+          }
+
+          const { minLeft, maxLeft } = calculateBounds()
+          leftPaneWidth.value = clamp(event.clientX - 12, minLeft, maxLeft)
+        }
+
+        function stopResize() {
+          resizing.value = false
+          document.body.classList.remove('is-resizing')
+          window.removeEventListener('pointermove', onPointerMove)
+          window.removeEventListener('pointerup', stopResize)
+        }
+
+        function startResize(event) {
+          if (window.innerWidth <= 960) {
+            return
+          }
+          event.preventDefault()
+          resizing.value = true
+          document.body.classList.add('is-resizing')
+          window.addEventListener('pointermove', onPointerMove)
+          window.addEventListener('pointerup', stopResize)
+        }
+
+        function resetSplit() {
+          leftPaneWidth.value = 380
+        }
+
+        async function loadQuickstartNotebook() {
+          try {
+            const response = await fetch(QUICKSTART_NOTEBOOK_URL, { cache: 'no-store' })
+            if (!response.ok) {
+              throw new Error(`Failed to load ${QUICKSTART_NOTEBOOK_URL}: ${response.status}`)
+            }
+            const data = await response.json()
+            if (!data || typeof data !== 'object' || !Array.isArray(data.cells)) {
+              throw new Error('Invalid notebook format')
+            }
+            notebook.value = data
+            notebookLoaded.value = true
+          } catch (error) {
+            console.error(error)
+          }
+        }
+
+        const pageStyle = computed(() => ({
+          '--left-pane-width': `${leftPaneWidth.value}px`,
+        }))
+
+        onMounted(() => {
+          void loadQuickstartNotebook()
+        })
+
+        onBeforeUnmount(() => {
+          stopResize()
+        })
+
+        return {
+          notebook,
+          notebookJson,
+          editorTheme,
+          pageStyle,
+          startResize,
+          resetSplit,
+        }
+      },
+      template: `
+          <main class="page" :style="pageStyle">
+            <section class="left-pane">
+              <section class="left-pane-card">
+                <h1>Vuepyter Example</h1>
+                <h2>Notebook JSON</h2>
+                <pre>{{ notebookJson }}</pre>
+              </section>
+            </section>
+
+            <div
+              class="splitter"
+              role="separator"
+              aria-label="Resize panes"
+              aria-orientation="vertical"
+              @pointerdown="startResize"
+              @dblclick="resetSplit"
+            />
+
+            <section class="right-pane">
+              <Vuepyter
+                class="editor-fill"
+                v-model="notebook"
+                :autosave-interval="1000"
+                :theme="editorTheme"
+              />
+            </section>
+          </main>
+        `,
+    })
+
+    app.mount('#app')
+  </script>
+</body>
+
+</html>

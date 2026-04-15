@@ -1,0 +1,1175 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vuepyter Cart-Pole Example</title>
+  <link rel="stylesheet" href="../../vuepyter/dist/vuepyter.css" />
+  <style>
+    :root {
+      --app-gap: 0.75rem;
+      --app-pad: 0.75rem;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    #app {
+      height: 100%;
+    }
+
+    .page {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: var(--left-pane-width, calc(50vw - 18px)) 10px minmax(0, 1fr);
+      gap: var(--app-gap);
+      padding: var(--app-pad);
+      box-sizing: border-box;
+    }
+
+    .left-pane,
+    .right-pane {
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .editor-fill {
+      height: 100%;
+    }
+
+    .splitter {
+      position: relative;
+      border-radius: 999px;
+      background: #d1d5db;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    .splitter::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 2px;
+      height: 40px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: #9ca3af;
+    }
+
+    .left-pane-card {
+      height: 100%;
+      min-height: 0;
+      border-radius: 0.7rem;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+      overflow: hidden;
+      display: block;
+    }
+
+    .simulation-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: #ffffff;
+      touch-action: none;
+    }
+
+    body.is-resizing,
+    body.is-resizing * {
+      user-select: none;
+      cursor: col-resize !important;
+    }
+
+    @media (max-width: 960px) {
+      .page {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+
+      .splitter {
+        display: none;
+      }
+
+      .left-pane {
+        height: 340px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    import { createApp, computed, onBeforeUnmount, onMounted, ref } from 'vue'
+    import { Vuepyter } from '/vuepyter/dist/index.mjs'
+
+    const NOTEBOOK_URL = './cart-pole.ipynb'
+    const DESKTOP_BREAKPOINT = 960
+    const TARGET_FRAME_MS = 1000 / 60
+    const MIN_STEP = 1 / 240
+    const MAX_STEP = 1 / 30
+    const DEFAULT_SIM_STATE = {
+      ready: false,
+      time: 0,
+      x: 0,
+      xDot: 0,
+      theta: 0,
+      thetaDot: 0,
+      command: 0,
+      poleLength: 0.8,
+      trackLimit: 2.4,
+      autoBalance: false,
+      terminated: false,
+      controllerError: '',
+    }
+
+    const app = createApp({
+      components: {
+        Vuepyter,
+      },
+      setup() {
+        const notebook = ref({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {},
+          cells: [],
+        })
+        const notebookLoaded = ref(false)
+        const vuepyterRef = ref(null)
+        const pyodideRef = ref(null)
+        const leftPaneWidth = ref(
+          typeof window === 'undefined' ? 380 : Math.max(380, Math.floor((window.innerWidth - 24) / 2)),
+        )
+        const resizing = ref(false)
+        const viewerCanvasRef = ref(null)
+        const simState = ref({ ...DEFAULT_SIM_STATE })
+        const tipTrail = ref([])
+        const dragState = ref({
+          mode: 'none',
+          hover: 'none',
+          pointerId: null,
+          lastWorldX: 0,
+          lastTheta: 0,
+          lastTimestamp: 0,
+        })
+        const isAutoExecuting = ref(false)
+        const hasAutoExecuted = ref(false)
+        const isNotebookBusy = ref(false)
+
+        const editorTheme = {
+          '--vuepyter-bg': '#ffffff',
+          '--vuepyter-cell-bg': '#ffffff',
+        }
+
+        let simulationTimer = 0
+        let lastStepTimestamp = 0
+        let isSimulationLoopRunning = false
+        let queuedInteractionState = null
+        let isApplyingInteractionState = false
+
+        function clamp(value, min, max) {
+          return Math.min(max, Math.max(min, value))
+        }
+
+        function wrapAngle(value) {
+          let angle = Number(value) || 0
+          while (angle <= -Math.PI) {
+            angle += Math.PI * 2
+          }
+          while (angle > Math.PI) {
+            angle -= Math.PI * 2
+          }
+          return angle
+        }
+
+        function shortestAngleDelta(next, prev) {
+          return wrapAngle(next - prev)
+        }
+
+        function distanceToSegment(px, py, ax, ay, bx, by) {
+          const abX = bx - ax
+          const abY = by - ay
+          const abLengthSquared = abX * abX + abY * abY
+          if (abLengthSquared === 0) {
+            return Math.hypot(px - ax, py - ay)
+          }
+          const t = clamp(((px - ax) * abX + (py - ay) * abY) / abLengthSquared, 0, 1)
+          const closestX = ax + abX * t
+          const closestY = ay + abY * t
+          return Math.hypot(px - closestX, py - closestY)
+        }
+
+        function getFigureLayout(width, height, state) {
+          const margin = 34
+          const worldHalfWidth = state.trackLimit + state.poleLength + 0.7
+          const scaleX = (width - margin * 2) / (worldHalfWidth * 2)
+          const scaleY = (height - margin * 2) / (state.poleLength * 2.9)
+          const scale = clamp(Math.min(scaleX, scaleY), 28, 140)
+          const originX = width / 2
+          const groundY = height - margin - 26
+          const cartHalfWidth = 0.34
+          const cartHeight = 0.18
+          const wheelRadius = 0.06
+          const pivotHeight = cartHeight + wheelRadius * 2 + 0.03
+
+          const toCanvasX = (worldX) => originX + worldX * scale
+          const toCanvasY = (worldY) => groundY - worldY * scale
+          const toWorldX = (canvasX) => (canvasX - originX) / scale
+          const toWorldY = (canvasY) => (groundY - canvasY) / scale
+
+          const trackLeftX = toCanvasX(-state.trackLimit)
+          const trackRightX = toCanvasX(state.trackLimit)
+          const cartCenterX = toCanvasX(state.x)
+          const cartTopY = toCanvasY(pivotHeight - cartHeight)
+          const cartBottomY = cartTopY + cartHeight * scale
+          const pivotX = cartCenterX
+          const pivotY = toCanvasY(pivotHeight)
+          const tipX = toCanvasX(state.x + state.poleLength * Math.sin(state.theta))
+          const tipY = toCanvasY(pivotHeight + state.poleLength * Math.cos(state.theta))
+
+          return {
+            margin,
+            scale,
+            groundY,
+            cartHalfWidth,
+            cartHeight,
+            wheelRadius,
+            pivotHeight,
+            toCanvasX,
+            toCanvasY,
+            toWorldX,
+            toWorldY,
+            trackLeftX,
+            trackRightX,
+            cartCenterX,
+            cartTopY,
+            cartBottomY,
+            cartLeftX: cartCenterX - cartHalfWidth * scale,
+            cartRightX: cartCenterX + cartHalfWidth * scale,
+            pivotX,
+            pivotY,
+            tipX,
+            tipY,
+          }
+        }
+
+        function getTipPoint(state) {
+          const pivotHeight = 0.18 + 0.06 * 2 + 0.03
+          return {
+            x: state.x + state.poleLength * Math.sin(state.theta),
+            y: pivotHeight + state.poleLength * Math.cos(state.theta),
+            t: state.time,
+          }
+        }
+
+        function updateTipTrail(nextState) {
+          if (!nextState.ready) {
+            tipTrail.value = []
+            return
+          }
+
+          const previousState = simState.value
+          if (
+            nextState.time < previousState.time - 1e-6 ||
+            Math.abs(nextState.x - previousState.x) > nextState.trackLimit * 1.4
+          ) {
+            tipTrail.value = []
+          }
+
+          const tip = getTipPoint(nextState)
+          const last = tipTrail.value[tipTrail.value.length - 1]
+          if (!last) {
+            tipTrail.value = [tip]
+            return
+          }
+
+          const moved = Math.hypot(tip.x - last.x, tip.y - last.y)
+          const elapsed = Math.abs(tip.t - last.t)
+          if (moved > 0.01 || elapsed > 0.025) {
+            tipTrail.value = [...tipTrail.value.slice(-95), tip]
+          }
+        }
+
+        function getCanvasPoint(event) {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return null
+          }
+          const rect = canvas.getBoundingClientRect()
+          return {
+            localX: event.clientX - rect.left,
+            localY: event.clientY - rect.top,
+          }
+        }
+
+        function resolveDragTarget(localX, localY, layout) {
+          const insideCart =
+            localX >= layout.cartLeftX &&
+            localX <= layout.cartRightX &&
+            localY >= layout.cartTopY &&
+            localY <= layout.cartBottomY + 14
+          if (insideCart) {
+            return 'cart'
+          }
+
+          const tipDistance = Math.hypot(localX - layout.tipX, localY - layout.tipY)
+          if (tipDistance <= 18) {
+            return 'pole'
+          }
+
+          const rodDistance = distanceToSegment(
+            localX,
+            localY,
+            layout.pivotX,
+            layout.pivotY,
+            layout.tipX,
+            layout.tipY,
+          )
+          if (rodDistance <= 12) {
+            return 'pole'
+          }
+
+          return 'none'
+        }
+
+        function updateCanvasCursor() {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return
+          }
+
+          if (dragState.value.mode !== 'none') {
+            canvas.style.cursor = 'grabbing'
+            return
+          }
+
+          if (dragState.value.hover === 'cart') {
+            canvas.style.cursor = 'ew-resize'
+            return
+          }
+
+          if (dragState.value.hover === 'pole') {
+            canvas.style.cursor = 'grab'
+            return
+          }
+
+          canvas.style.cursor = 'default'
+        }
+
+        function calculateBounds() {
+          const totalWidth = window.innerWidth - 2 * 12
+          const minLeft = 280
+          const minRight = 420
+          const maxLeft = Math.max(minLeft, totalWidth - minRight)
+          return { minLeft, maxLeft }
+        }
+
+        function calculateDefaultSplit() {
+          if (window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return leftPaneWidth.value
+          }
+          const { minLeft, maxLeft } = calculateBounds()
+          const totalWidth = window.innerWidth - 2 * 12
+          return clamp(totalWidth / 2, minLeft, maxLeft)
+        }
+
+        function onPointerMove(event) {
+          if (!resizing.value || window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return
+          }
+
+          const { minLeft, maxLeft } = calculateBounds()
+          leftPaneWidth.value = clamp(event.clientX - 12, minLeft, maxLeft)
+          drawFigure()
+        }
+
+        function stopResize() {
+          resizing.value = false
+          document.body.classList.remove('is-resizing')
+          window.removeEventListener('pointermove', onPointerMove)
+          window.removeEventListener('pointerup', stopResize)
+        }
+
+        function startResize(event) {
+          if (window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return
+          }
+          event.preventDefault()
+          resizing.value = true
+          document.body.classList.add('is-resizing')
+          window.addEventListener('pointermove', onPointerMove)
+          window.addEventListener('pointerup', stopResize)
+        }
+
+        function resetSplit() {
+          leftPaneWidth.value = calculateDefaultSplit()
+          drawFigure()
+        }
+
+        function onWindowResize() {
+          if (window.innerWidth > DESKTOP_BREAKPOINT) {
+            const { minLeft, maxLeft } = calculateBounds()
+            leftPaneWidth.value = clamp(leftPaneWidth.value, minLeft, maxLeft)
+          }
+          drawFigure()
+        }
+
+        async function loadNotebook() {
+          try {
+            const response = await fetch(NOTEBOOK_URL, { cache: 'no-store' })
+            if (!response.ok) {
+              throw new Error(`Failed to load ${NOTEBOOK_URL}: ${response.status}`)
+            }
+            const data = await response.json()
+            if (!data || typeof data !== 'object' || !Array.isArray(data.cells)) {
+              throw new Error('Invalid notebook format')
+            }
+            notebook.value = data
+            notebookLoaded.value = true
+            void maybeAutoExecuteAll()
+          } catch (error) {
+            console.error(error)
+          }
+        }
+
+        function destroyPyProxy(value) {
+          if (value && typeof value === 'object' && typeof value.destroy === 'function') {
+            try {
+              value.destroy()
+            } catch {
+              // Ignore proxy cleanup errors.
+            }
+          }
+        }
+
+        async function executeAllCells() {
+          const editor = vuepyterRef.value
+          if (!editor || typeof editor.executeAllCells !== 'function' || !notebookLoaded.value) {
+            return
+          }
+
+          isAutoExecuting.value = true
+          try {
+            await editor.executeAllCells()
+          } catch (error) {
+            console.error(error)
+          } finally {
+            isAutoExecuting.value = false
+            lastStepTimestamp = performance.now()
+          }
+        }
+
+        async function maybeAutoExecuteAll() {
+          if (hasAutoExecuted.value || isAutoExecuting.value) {
+            return
+          }
+          if (!notebookLoaded.value || !pyodideRef.value) {
+            return
+          }
+          hasAutoExecuted.value = true
+          await executeAllCells()
+          startSimulationLoop()
+        }
+
+        function getCanvasMetrics() {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return null
+          }
+          const rect = canvas.getBoundingClientRect()
+          const width = Math.max(1, rect.width)
+          const height = Math.max(1, rect.height)
+          const dpr = window.devicePixelRatio || 1
+          const pixelWidth = Math.max(1, Math.floor(width * dpr))
+          const pixelHeight = Math.max(1, Math.floor(height * dpr))
+          if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+            canvas.width = pixelWidth
+            canvas.height = pixelHeight
+          }
+          const ctx = canvas.getContext('2d')
+          if (!ctx) {
+            return null
+          }
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          return { ctx, width, height }
+        }
+
+        function applySimulationState(payload) {
+          const state = payload && payload.state && typeof payload.state === 'object' ? payload.state : {}
+          const next = {
+            ready: Boolean(payload?.ok),
+            time: Number.isFinite(Number(state.time)) ? Number(state.time) : 0,
+            x: Number.isFinite(Number(state.x)) ? Number(state.x) : 0,
+            xDot: Number.isFinite(Number(state.x_dot)) ? Number(state.x_dot) : 0,
+            theta: Number.isFinite(Number(state.theta)) ? Number(state.theta) : 0,
+            thetaDot: Number.isFinite(Number(state.theta_dot)) ? Number(state.theta_dot) : 0,
+            command: clamp(Number.isFinite(Number(payload?.command)) ? Number(payload.command) : 0, -1, 1),
+            poleLength: Math.max(0.25, Number.isFinite(Number(state.pole_length)) ? Number(state.pole_length) : 0.8),
+            trackLimit: Math.max(1, Number.isFinite(Number(state.track_limit)) ? Number(state.track_limit) : 2.4),
+            autoBalance: Boolean(payload?.auto_balance),
+            terminated: Boolean(state.terminated),
+            controllerError: typeof payload?.controller_error === 'string' ? payload.controller_error : '',
+          }
+          updateTipTrail(next)
+          simState.value = next
+          if (dragState.value.mode === 'none') {
+            dragState.value = {
+              ...dragState.value,
+              lastWorldX: next.x,
+              lastTheta: next.theta,
+            }
+          }
+          drawFigure()
+        }
+
+        async function flushInteractionState() {
+          if (isApplyingInteractionState) {
+            return
+          }
+
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            queuedInteractionState = null
+            return
+          }
+
+          isApplyingInteractionState = true
+          try {
+            while (queuedInteractionState) {
+              const next = queuedInteractionState
+              queuedInteractionState = null
+
+              let rawResult = null
+              try {
+                rawResult = await instance.runPythonAsync(`
+import json
+import math
+
+payload = {"ok": False, "state": None, "command": 0.0, "auto_balance": False, "controller_error": ""}
+
+if "sim" in globals():
+    sim.x = ${next.x}
+    sim.x_dot = ${next.xDot}
+    sim.theta = ((float(${next.theta}) + math.pi) % (2 * math.pi)) - math.pi
+    sim.theta_dot = ${next.thetaDot}
+    sim.command = 0.0
+    sim.terminated = False
+    payload = {
+        "ok": True,
+        "state": sim.state,
+        "command": float(sim.command),
+        "auto_balance": bool(globals().get("auto_balance", False)),
+        "controller_error": "",
+    }
+
+json.dumps(payload)
+                `)
+
+                const text = typeof rawResult === 'string' ? rawResult : String(rawResult)
+                const payload = JSON.parse(text)
+                if (payload && payload.ok) {
+                  applySimulationState(payload)
+                }
+              } catch (error) {
+                console.error(error)
+              } finally {
+                destroyPyProxy(rawResult)
+              }
+            }
+          } finally {
+            isApplyingInteractionState = false
+          }
+        }
+
+        function queueInteractionState(nextState) {
+          queuedInteractionState = {
+            x: Number(nextState.x.toFixed(6)),
+            xDot: Number(nextState.xDot.toFixed(6)),
+            theta: Number(wrapAngle(nextState.theta).toFixed(6)),
+            thetaDot: Number(nextState.thetaDot.toFixed(6)),
+          }
+          void flushInteractionState()
+        }
+
+        function updateHoverState(localX, localY) {
+          if (!simState.value.ready || dragState.value.mode !== 'none') {
+            return
+          }
+
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const layout = getFigureLayout(metrics.width, metrics.height, simState.value)
+          const hover = resolveDragTarget(localX, localY, layout)
+          if (hover !== dragState.value.hover) {
+            dragState.value = { ...dragState.value, hover }
+            drawFigure()
+          } else {
+            updateCanvasCursor()
+          }
+        }
+
+        function applyDrag(localX, localY, timestamp) {
+          const mode = dragState.value.mode
+          if (mode === 'none') {
+            return
+          }
+
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const layout = getFigureLayout(metrics.width, metrics.height, simState.value)
+          const previousState = simState.value
+          const previousTimestamp = dragState.value.lastTimestamp
+          const dt = previousTimestamp > 0 ? clamp((timestamp - previousTimestamp) / 1000, 1 / 240, 0.2) : 0
+
+          let nextX = previousState.x
+          let nextXDot = previousState.xDot
+          let nextTheta = previousState.theta
+          let nextThetaDot = previousState.thetaDot
+
+          if (mode === 'cart') {
+            nextX = clamp(layout.toWorldX(localX), -previousState.trackLimit, previousState.trackLimit)
+            nextXDot = dt > 0 ? clamp((nextX - dragState.value.lastWorldX) / dt, -8, 8) : 0
+            nextThetaDot = 0
+          } else if (mode === 'pole') {
+            const localWorldX = layout.toWorldX(localX)
+            const localWorldY = layout.toWorldY(localY)
+            const rawTheta = Math.atan2(localWorldX - previousState.x, localWorldY - layout.pivotHeight)
+            nextTheta = wrapAngle(rawTheta)
+            nextThetaDot = dt > 0 ? clamp(shortestAngleDelta(nextTheta, dragState.value.lastTheta) / dt, -12, 12) : 0
+            nextXDot = 0
+          }
+
+          const nextState = {
+            ...previousState,
+            ready: true,
+            x: nextX,
+            xDot: nextXDot,
+            theta: nextTheta,
+            thetaDot: nextThetaDot,
+            command: 0,
+            terminated: false,
+            controllerError: '',
+          }
+
+          updateTipTrail(nextState)
+          simState.value = nextState
+          dragState.value = {
+            ...dragState.value,
+            lastWorldX: nextState.x,
+            lastTheta: nextState.theta,
+            lastTimestamp: timestamp,
+          }
+          drawFigure()
+          queueInteractionState(nextState)
+        }
+
+        function endDrag(event, clearHover = false) {
+          if (dragState.value.mode === 'none') {
+            if (clearHover && dragState.value.hover !== 'none') {
+              dragState.value = { ...dragState.value, hover: 'none' }
+              drawFigure()
+            } else {
+              updateCanvasCursor()
+            }
+            return
+          }
+
+          const canvas = viewerCanvasRef.value
+          if (canvas && dragState.value.pointerId !== null && typeof canvas.releasePointerCapture === 'function') {
+            try {
+              canvas.releasePointerCapture(dragState.value.pointerId)
+            } catch {
+              // Ignore release errors when pointer capture has already ended.
+            }
+          }
+
+          let hover = 'none'
+          const point = event ? getCanvasPoint(event) : null
+          if (point) {
+            const metrics = getCanvasMetrics()
+            if (metrics) {
+              const layout = getFigureLayout(metrics.width, metrics.height, simState.value)
+              hover = resolveDragTarget(point.localX, point.localY, layout)
+            }
+          }
+
+          dragState.value = {
+            ...dragState.value,
+            mode: 'none',
+            hover: clearHover ? 'none' : hover,
+            pointerId: null,
+            lastTimestamp: 0,
+          }
+          lastStepTimestamp = performance.now()
+          drawFigure()
+        }
+
+        function drawFigure() {
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { ctx, width, height } = metrics
+          const state = simState.value
+
+          ctx.clearRect(0, 0, width, height)
+          ctx.fillStyle = '#ffffff'
+          ctx.fillRect(0, 0, width, height)
+
+          if (!state.ready) {
+            ctx.fillStyle = '#111827'
+            ctx.font = '500 15px ui-monospace, SFMono-Regular, Menlo, monospace'
+            ctx.textAlign = 'center'
+            ctx.fillText('Initializing cart-pole notebook...', width / 2, height / 2)
+            updateCanvasCursor()
+            return
+          }
+
+          const layout = getFigureLayout(width, height, state)
+          const activeTarget = dragState.value.mode !== 'none' ? dragState.value.mode : dragState.value.hover
+          const cartIsActive = activeTarget === 'cart'
+          const poleIsActive = activeTarget === 'pole'
+
+          ctx.save()
+          ctx.strokeStyle = '#d1d5db'
+          ctx.lineWidth = 1
+          ctx.setLineDash([6, 6])
+          ctx.beginPath()
+          ctx.moveTo(width / 2 + 0.5, layout.margin)
+          ctx.lineTo(width / 2 + 0.5, layout.groundY + 18)
+          ctx.stroke()
+          ctx.restore()
+
+          if (tipTrail.value.length > 1) {
+            ctx.save()
+            ctx.lineCap = 'round'
+            ctx.lineJoin = 'round'
+            for (let index = 1; index < tipTrail.value.length; index += 1) {
+              const prev = tipTrail.value[index - 1]
+              const next = tipTrail.value[index]
+              const strength = index / (tipTrail.value.length - 1)
+              ctx.strokeStyle = `rgba(37, 99, 235, ${0.05 + strength * 0.22})`
+              ctx.lineWidth = 1 + strength * 2
+              ctx.beginPath()
+              ctx.moveTo(layout.toCanvasX(prev.x), layout.toCanvasY(prev.y))
+              ctx.lineTo(layout.toCanvasX(next.x), layout.toCanvasY(next.y))
+              ctx.stroke()
+            }
+            ctx.restore()
+          }
+
+          ctx.save()
+          ctx.strokeStyle = '#9ca3af'
+          ctx.lineWidth = 2
+          ctx.beginPath()
+          ctx.moveTo(layout.trackLeftX, layout.groundY + 0.5)
+          ctx.lineTo(layout.trackRightX, layout.groundY + 0.5)
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.moveTo(layout.trackLeftX, layout.groundY - 10)
+          ctx.lineTo(layout.trackLeftX, layout.groundY + 10)
+          ctx.moveTo(layout.trackRightX, layout.groundY - 10)
+          ctx.lineTo(layout.trackRightX, layout.groundY + 10)
+          ctx.stroke()
+          ctx.restore()
+
+          ctx.save()
+          ctx.strokeStyle = '#d1d5db'
+          ctx.lineWidth = 1.5
+          ctx.setLineDash([4, 6])
+          ctx.beginPath()
+          ctx.moveTo(layout.pivotX, layout.pivotY)
+          ctx.lineTo(layout.pivotX, layout.toCanvasY(layout.pivotHeight + state.poleLength))
+          ctx.stroke()
+          ctx.restore()
+
+          ctx.save()
+          ctx.fillStyle = cartIsActive ? '#eff6ff' : '#f5f5f4'
+          ctx.strokeStyle = cartIsActive ? '#2563eb' : '#111827'
+          ctx.lineWidth = 2
+          ctx.beginPath()
+          ctx.rect(
+            layout.cartLeftX,
+            layout.cartTopY,
+            layout.cartHalfWidth * 2 * layout.scale,
+            layout.cartHeight * layout.scale,
+          )
+          ctx.fill()
+          ctx.stroke()
+
+          const wheelY = layout.toCanvasY(layout.wheelRadius)
+          const wheelOffset = layout.cartHalfWidth * 0.52 * layout.scale
+          ctx.beginPath()
+          ctx.arc(layout.cartCenterX - wheelOffset, wheelY, layout.wheelRadius * layout.scale, 0, Math.PI * 2)
+          ctx.arc(layout.cartCenterX + wheelOffset, wheelY, layout.wheelRadius * layout.scale, 0, Math.PI * 2)
+          ctx.stroke()
+          ctx.restore()
+
+          ctx.save()
+          ctx.strokeStyle = poleIsActive ? '#2563eb' : '#111827'
+          ctx.lineCap = 'round'
+          ctx.lineWidth = poleIsActive ? 5 : 4
+          ctx.beginPath()
+          ctx.moveTo(layout.pivotX, layout.pivotY)
+          ctx.lineTo(layout.tipX, layout.tipY)
+          ctx.stroke()
+
+          ctx.fillStyle = poleIsActive ? '#2563eb' : '#111827'
+          ctx.beginPath()
+          ctx.arc(layout.pivotX, layout.pivotY, 5, 0, Math.PI * 2)
+          ctx.arc(layout.tipX, layout.tipY, poleIsActive ? 8 : 7, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.restore()
+
+          if (Math.abs(state.theta) > 0.015) {
+            ctx.save()
+            ctx.strokeStyle = '#b91c1c'
+            ctx.lineWidth = 2
+            ctx.beginPath()
+            ctx.arc(layout.pivotX, layout.pivotY, 20, -Math.PI / 2, -Math.PI / 2 + state.theta, state.theta < 0)
+            ctx.stroke()
+            ctx.restore()
+          }
+
+          if (Math.abs(state.command) > 0.01) {
+            const arrowLength = state.command * layout.scale * 0.55
+            const arrowBaseY = layout.toCanvasY(layout.pivotHeight - layout.cartHeight - 0.12)
+            const arrowTipX = layout.cartCenterX + arrowLength
+
+            ctx.save()
+            ctx.strokeStyle = '#2563eb'
+            ctx.fillStyle = '#2563eb'
+            ctx.lineWidth = 2
+            ctx.beginPath()
+            ctx.moveTo(layout.cartCenterX, arrowBaseY)
+            ctx.lineTo(arrowTipX, arrowBaseY)
+            ctx.stroke()
+
+            const direction = Math.sign(arrowLength) || 1
+            ctx.beginPath()
+            ctx.moveTo(arrowTipX, arrowBaseY)
+            ctx.lineTo(arrowTipX - direction * 10, arrowBaseY - 5)
+            ctx.lineTo(arrowTipX - direction * 10, arrowBaseY + 5)
+            ctx.closePath()
+            ctx.fill()
+            ctx.restore()
+          }
+
+          ctx.save()
+          ctx.fillStyle = '#111827'
+          ctx.font = '500 12px ui-monospace, SFMono-Regular, Menlo, monospace'
+          ctx.textAlign = 'left'
+          ctx.fillText('drag the cart or pole to reposition', 20, 24)
+          ctx.fillText(`mode  ${state.autoBalance ? 'auto' : 'manual'}`, 20, 44)
+          ctx.fillText(`u     ${state.command >= 0 ? '+' : ''}${state.command.toFixed(2)}`, 20, 64)
+          ctx.fillText(`x     ${state.x >= 0 ? '+' : ''}${state.x.toFixed(2)} m`, 20, 84)
+          ctx.fillText(`theta ${state.theta >= 0 ? '+' : ''}${(state.theta * 180 / Math.PI).toFixed(1)} deg`, 20, 104)
+          if (state.terminated) {
+            ctx.fillStyle = '#b91c1c'
+            ctx.fillText('rod fell - run the reset cell to try again', 20, height - 20)
+          } else if (state.controllerError) {
+            ctx.fillStyle = '#b91c1c'
+            ctx.fillText(`controller error: ${state.controllerError}`, 20, height - 20)
+          }
+          ctx.restore()
+          updateCanvasCursor()
+        }
+
+        async function stepSimulation(dt) {
+          if (
+            isAutoExecuting.value ||
+            isNotebookBusy.value ||
+            dragState.value.mode !== 'none' ||
+            isApplyingInteractionState ||
+            queuedInteractionState
+          ) {
+            return
+          }
+
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            return
+          }
+
+          const boundedDt = clamp(dt, MIN_STEP, MAX_STEP)
+          let rawResult = null
+
+          try {
+            rawResult = await instance.runPythonAsync(`
+import json
+
+payload = {"ok": False, "state": None, "command": 0.0, "auto_balance": False, "controller_error": ""}
+
+if "sim" in globals():
+    auto_balance_flag = bool(globals().get("auto_balance", False))
+    manual_command_value = globals().get("manual_command", 0.0)
+    choose_command_fn = globals().get("choose_command")
+    controller_fn = globals().get("controller")
+    controller_error = ""
+
+    try:
+        if callable(choose_command_fn):
+            command = float(choose_command_fn(sim.state))
+        elif auto_balance_flag and callable(controller_fn):
+            command = float(controller_fn(sim.state))
+        else:
+            command = float(manual_command_value)
+    except Exception as error:
+        controller_error = f"{type(error).__name__}: {error}"
+        try:
+            command = float(manual_command_value)
+        except Exception:
+            command = 0.0
+
+    state = sim.step(command, dt=${boundedDt})
+    payload = {
+        "ok": True,
+        "state": state,
+        "command": float(command),
+        "auto_balance": auto_balance_flag,
+        "controller_error": controller_error,
+    }
+
+json.dumps(payload)
+            `)
+
+            const text = typeof rawResult === 'string' ? rawResult : String(rawResult)
+            const payload = JSON.parse(text)
+            if (payload && payload.ok) {
+              applySimulationState(payload)
+            }
+          } catch (error) {
+            console.error(error)
+          } finally {
+            destroyPyProxy(rawResult)
+          }
+        }
+
+        async function simulationLoop() {
+          if (!isSimulationLoopRunning) {
+            return
+          }
+
+          const now = performance.now()
+          const dt = lastStepTimestamp ? (now - lastStepTimestamp) / 1000 : 1 / 60
+          lastStepTimestamp = now
+
+          const startedAt = performance.now()
+          await stepSimulation(dt)
+
+          if (!isSimulationLoopRunning) {
+            return
+          }
+
+          const elapsed = performance.now() - startedAt
+          simulationTimer = window.setTimeout(() => {
+            void simulationLoop()
+          }, Math.max(0, TARGET_FRAME_MS - elapsed))
+        }
+
+        function startSimulationLoop() {
+          if (isSimulationLoopRunning) {
+            return
+          }
+          isSimulationLoopRunning = true
+          lastStepTimestamp = performance.now()
+          void simulationLoop()
+        }
+
+        function stopSimulationLoop() {
+          isSimulationLoopRunning = false
+          lastStepTimestamp = 0
+          if (simulationTimer) {
+            window.clearTimeout(simulationTimer)
+            simulationTimer = 0
+          }
+        }
+
+        function onKernelReady(payload) {
+          pyodideRef.value = payload.pyodide
+          void maybeAutoExecuteAll()
+        }
+
+        function onCellExecute() {
+          isNotebookBusy.value = true
+        }
+
+        function onCellComplete() {
+          isNotebookBusy.value = false
+          lastStepTimestamp = performance.now()
+        }
+
+        function onCanvasPointerDown(event) {
+          if (!simState.value.ready || isAutoExecuting.value || isNotebookBusy.value) {
+            return
+          }
+          if (event.button !== 0 && event.pointerType !== 'touch') {
+            return
+          }
+
+          const point = getCanvasPoint(event)
+          if (!point) {
+            return
+          }
+
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const layout = getFigureLayout(metrics.width, metrics.height, simState.value)
+          const mode = resolveDragTarget(point.localX, point.localY, layout)
+          if (mode === 'none') {
+            return
+          }
+
+          event.preventDefault()
+          const canvas = viewerCanvasRef.value
+          if (canvas && typeof canvas.setPointerCapture === 'function') {
+            canvas.setPointerCapture(event.pointerId)
+          }
+
+          dragState.value = {
+            ...dragState.value,
+            mode,
+            hover: mode,
+            pointerId: event.pointerId,
+            lastWorldX: simState.value.x,
+            lastTheta: simState.value.theta,
+            lastTimestamp: event.timeStamp,
+          }
+          applyDrag(point.localX, point.localY, event.timeStamp)
+        }
+
+        function onCanvasPointerMove(event) {
+          const point = getCanvasPoint(event)
+          if (!point) {
+            return
+          }
+
+          if (dragState.value.mode !== 'none') {
+            if (dragState.value.pointerId !== null && event.pointerId !== dragState.value.pointerId) {
+              return
+            }
+            applyDrag(point.localX, point.localY, event.timeStamp)
+            return
+          }
+
+          updateHoverState(point.localX, point.localY)
+        }
+
+        function onCanvasPointerUp(event) {
+          if (dragState.value.mode === 'none') {
+            return
+          }
+          if (dragState.value.pointerId !== null && event.pointerId !== dragState.value.pointerId) {
+            return
+          }
+          endDrag(event)
+        }
+
+        function onCanvasPointerLeave() {
+          if (dragState.value.mode !== 'none') {
+            return
+          }
+          endDrag(null, true)
+        }
+
+        const pageStyle = computed(() => ({
+          '--left-pane-width': `${leftPaneWidth.value}px`,
+        }))
+
+        onMounted(() => {
+          if (window.innerWidth > DESKTOP_BREAKPOINT) {
+            leftPaneWidth.value = calculateDefaultSplit()
+          }
+          window.addEventListener('resize', onWindowResize)
+          void loadNotebook()
+          drawFigure()
+        })
+
+        onBeforeUnmount(() => {
+          stopSimulationLoop()
+          stopResize()
+          window.removeEventListener('resize', onWindowResize)
+        })
+
+        return {
+          notebook,
+          vuepyterRef,
+          editorTheme,
+          pageStyle,
+          startResize,
+          resetSplit,
+          viewerCanvasRef,
+          onKernelReady,
+          onCellExecute,
+          onCellComplete,
+          onCanvasPointerDown,
+          onCanvasPointerMove,
+          onCanvasPointerUp,
+          onCanvasPointerLeave,
+        }
+      },
+      template: `
+          <main class="page" :style="pageStyle">
+            <section class="left-pane">
+              <section class="left-pane-card" aria-label="Cart-pole visualization">
+                <canvas
+                  ref="viewerCanvasRef"
+                  class="simulation-canvas"
+                  @pointerdown="onCanvasPointerDown"
+                  @pointermove="onCanvasPointerMove"
+                  @pointerup="onCanvasPointerUp"
+                  @pointercancel="onCanvasPointerUp"
+                  @pointerleave="onCanvasPointerLeave"
+                />
+              </section>
+            </section>
+
+            <div
+              class="splitter"
+              role="separator"
+              aria-label="Resize panes"
+              aria-orientation="vertical"
+              @pointerdown="startResize"
+              @dblclick="resetSplit"
+            />
+
+            <section class="right-pane">
+              <Vuepyter
+                ref="vuepyterRef"
+                class="editor-fill"
+                v-model="notebook"
+                :autosave-interval="1000"
+                :theme="editorTheme"
+                @ready="onKernelReady"
+                @cell:execute="onCellExecute"
+                @cell:complete="onCellComplete"
+              />
+            </section>
+          </main>
+        `,
+    })
+
+    app.mount('#app')
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,665 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vuepyter Game of Life Example</title>
+  <link rel="stylesheet" href="../../vuepyter/dist/vuepyter.css" />
+  <style>
+    :root {
+      --app-gap: 0.75rem;
+      --app-pad: 0.75rem;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    #app {
+      height: 100%;
+    }
+
+    .page {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: var(--left-pane-width, calc(50vw - 18px)) 10px minmax(0, 1fr);
+      gap: var(--app-gap);
+      padding: var(--app-pad);
+      box-sizing: border-box;
+    }
+
+    .left-pane {
+      display: block;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .right-pane {
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .editor-fill {
+      height: 100%;
+    }
+
+    .splitter {
+      position: relative;
+      border-radius: 999px;
+      background: #d1d5db;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    .splitter::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 2px;
+      height: 40px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: #9ca3af;
+    }
+
+    .left-pane-card {
+      border-radius: 0.7rem;
+      background: #ffffff;
+      border: 0;
+      padding: 0;
+      min-height: 0;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+      height: 100%;
+      box-sizing: border-box;
+      overflow: hidden;
+      display: block;
+    }
+
+    .game-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: grab;
+    }
+
+    .game-canvas.is-panning {
+      cursor: grabbing;
+    }
+
+    body.is-resizing,
+    body.is-resizing * {
+      user-select: none;
+      cursor: col-resize !important;
+    }
+
+    @media (max-width: 960px) {
+      .page {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+
+      .splitter {
+        display: none;
+      }
+
+      .left-pane {
+        display: block;
+        height: 340px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    import { createApp, ref, computed, onBeforeUnmount, onMounted } from 'vue'
+    import { Vuepyter } from '/vuepyter/dist/index.mjs'
+
+    const NOTEBOOK_URL = './game-of-life.ipynb'
+    const DESKTOP_BREAKPOINT = 960
+    const TARGET_VISIBLE_ROWS = 64
+
+    const app = createApp({
+      components: {
+        Vuepyter,
+      },
+      setup() {
+        const notebook = ref({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {},
+          cells: [],
+        })
+        const notebookLoaded = ref(false)
+        const vuepyterRef = ref(null)
+        const pyodideRef = ref(null)
+        const leftPaneWidth = ref(
+          typeof window === 'undefined' ? 380 : Math.max(380, Math.floor((window.innerWidth - 24) / 2)),
+        )
+        const resizing = ref(false)
+        const viewerCanvasRef = ref(null)
+        const gameState = ref({
+          rows: 0,
+          cols: 0,
+          grid: [],
+        })
+        const kernelUpdateMode = ref('after-execution')
+        const isAutoExecuting = ref(false)
+        const hasAutoExecuted = ref(false)
+        const hasCenteredOnState = ref(false)
+        const zoomLevel = ref(10)
+        const cameraOffsetX = ref(0)
+        const cameraOffsetY = ref(0)
+        const isPanningCamera = ref(false)
+
+        const editorTheme = {
+          '--vuepyter-bg': '#ffffff',
+          '--vuepyter-cell-bg': '#ffffff',
+        }
+
+        let lastPointerX = 0
+        let lastPointerY = 0
+
+        function clamp(value, min, max) {
+          return Math.min(max, Math.max(min, value))
+        }
+
+        function calculateBounds() {
+          const totalWidth = window.innerWidth - 2 * 12
+          const minLeft = 280
+          const minRight = 420
+          const maxLeft = Math.max(minLeft, totalWidth - minRight)
+          return { minLeft, maxLeft }
+        }
+
+        function calculateDefaultSplit() {
+          if (window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return leftPaneWidth.value
+          }
+          const { minLeft, maxLeft } = calculateBounds()
+          const totalWidth = window.innerWidth - 2 * 12
+          return clamp(totalWidth / 2, minLeft, maxLeft)
+        }
+
+        function onPointerMove(event) {
+          if (!resizing.value || window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return
+          }
+
+          const { minLeft, maxLeft } = calculateBounds()
+          leftPaneWidth.value = clamp(event.clientX - 12, minLeft, maxLeft)
+          drawGame()
+        }
+
+        function stopResize() {
+          resizing.value = false
+          document.body.classList.remove('is-resizing')
+          window.removeEventListener('pointermove', onPointerMove)
+          window.removeEventListener('pointerup', stopResize)
+        }
+
+        function startResize(event) {
+          if (window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return
+          }
+          event.preventDefault()
+          resizing.value = true
+          document.body.classList.add('is-resizing')
+          window.addEventListener('pointermove', onPointerMove)
+          window.addEventListener('pointerup', stopResize)
+        }
+
+        function resetSplit() {
+          leftPaneWidth.value = calculateDefaultSplit()
+          drawGame()
+        }
+
+        function onWindowResize() {
+          if (window.innerWidth > DESKTOP_BREAKPOINT) {
+            const { minLeft, maxLeft } = calculateBounds()
+            leftPaneWidth.value = clamp(leftPaneWidth.value, minLeft, maxLeft)
+          }
+          drawGame()
+        }
+
+        async function loadNotebook() {
+          try {
+            const response = await fetch(NOTEBOOK_URL, { cache: 'no-store' })
+            if (!response.ok) {
+              throw new Error(`Failed to load ${NOTEBOOK_URL}: ${response.status}`)
+            }
+            const data = await response.json()
+            if (!data || typeof data !== 'object' || !Array.isArray(data.cells)) {
+              throw new Error('Invalid notebook format')
+            }
+            notebook.value = data
+            notebookLoaded.value = true
+            void maybeAutoExecuteAll()
+          } catch (error) {
+            console.error(error)
+          }
+        }
+
+        function normalizeGrid(rawGrid, rows, cols) {
+          const normalized = []
+          for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+            const sourceRow = Array.isArray(rawGrid?.[rowIndex]) ? rawGrid[rowIndex] : []
+            const row = []
+            for (let colIndex = 0; colIndex < cols; colIndex += 1) {
+              row.push(sourceRow[colIndex] ? 1 : 0)
+            }
+            normalized.push(row)
+          }
+          return normalized
+        }
+
+        function applyGameState(rows, cols, rawGrid) {
+          const safeRows = Math.max(0, Number(rows) || 0)
+          const safeCols = Math.max(0, Number(cols) || 0)
+          const grid = normalizeGrid(rawGrid, safeRows, safeCols)
+          gameState.value = { rows: safeRows, cols: safeCols, grid }
+          if (!hasCenteredOnState.value && safeRows > 0 && safeCols > 0) {
+            setInitialCamera(safeCols / 2, safeRows / 2)
+            hasCenteredOnState.value = true
+            return
+          }
+          drawGame()
+        }
+
+        function destroyPyProxy(value) {
+          if (value && typeof value === 'object' && typeof value.destroy === 'function') {
+            try {
+              value.destroy()
+            } catch {
+              // Ignore proxy cleanup errors.
+            }
+          }
+        }
+
+        async function executeAllCells() {
+          const editor = vuepyterRef.value
+          if (!editor || typeof editor.executeAllCells !== 'function' || !notebookLoaded.value) {
+            return
+          }
+
+          isAutoExecuting.value = true
+          try {
+            await editor.executeAllCells()
+          } catch (error) {
+            console.error(error)
+          } finally {
+            isAutoExecuting.value = false
+          }
+        }
+
+        async function maybeAutoExecuteAll() {
+          if (hasAutoExecuted.value || isAutoExecuting.value) {
+            return
+          }
+          if (!notebookLoaded.value || !pyodideRef.value) {
+            return
+          }
+          hasAutoExecuted.value = true
+          await executeAllCells()
+          await refreshGameState()
+        }
+
+        function getCanvasMetrics() {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return null
+          }
+          const rect = canvas.getBoundingClientRect()
+          const width = Math.max(1, rect.width)
+          const height = Math.max(1, rect.height)
+          const dpr = window.devicePixelRatio || 1
+          const pixelWidth = Math.max(1, Math.floor(width * dpr))
+          const pixelHeight = Math.max(1, Math.floor(height * dpr))
+          if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+            canvas.width = pixelWidth
+            canvas.height = pixelHeight
+          }
+          const ctx = canvas.getContext('2d')
+          if (!ctx) {
+            return null
+          }
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          return { ctx, width, height }
+        }
+
+        function drawGame() {
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { ctx, width, height } = metrics
+          const cellSize = zoomLevel.value
+          const originX = cameraOffsetX.value
+          const originY = cameraOffsetY.value
+
+          ctx.clearRect(0, 0, width, height)
+          ctx.fillStyle = '#ffffff'
+          ctx.fillRect(0, 0, width, height)
+
+          const firstCol = Math.floor((-originX) / cellSize) - 1
+          const lastCol = Math.ceil((width - originX) / cellSize) + 1
+          const firstRow = Math.floor((-originY) / cellSize) - 1
+          const lastRow = Math.ceil((height - originY) / cellSize) + 1
+
+          const { rows, cols, grid } = gameState.value
+          if (rows > 0 && cols > 0) {
+            const startCol = Math.max(0, firstCol)
+            const endCol = Math.min(cols, lastCol)
+            const startRow = Math.max(0, firstRow)
+            const endRow = Math.min(rows, lastRow)
+
+            ctx.fillStyle = '#07122a'
+            for (let rowIndex = startRow; rowIndex < endRow; rowIndex += 1) {
+              const row = Array.isArray(grid[rowIndex]) ? grid[rowIndex] : []
+              for (let colIndex = startCol; colIndex < endCol; colIndex += 1) {
+                if (!row[colIndex]) {
+                  continue
+                }
+                const cellX = originX + colIndex * cellSize
+                const cellY = originY + rowIndex * cellSize
+                ctx.fillRect(cellX, cellY, cellSize, cellSize)
+              }
+            }
+          }
+
+          ctx.strokeStyle = '#c5ccd6'
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          for (let colIndex = firstCol; colIndex <= lastCol; colIndex += 1) {
+            const x = Math.round(originX + colIndex * cellSize) + 0.5
+            ctx.moveTo(x, 0)
+            ctx.lineTo(x, height)
+          }
+          for (let rowIndex = firstRow; rowIndex <= lastRow; rowIndex += 1) {
+            const y = Math.round(originY + rowIndex * cellSize) + 0.5
+            ctx.moveTo(0, y)
+            ctx.lineTo(width, y)
+          }
+          ctx.stroke()
+        }
+
+        function setInitialCamera(centerCol = 0, centerRow = 0) {
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { width, height } = metrics
+          zoomLevel.value = clamp(height / TARGET_VISIBLE_ROWS, 2, 80)
+          cameraOffsetX.value = width / 2 - centerCol * zoomLevel.value
+          cameraOffsetY.value = height / 2 - centerRow * zoomLevel.value
+          drawGame()
+        }
+
+        async function refreshGameState() {
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            gameState.value = { rows: 0, cols: 0, grid: [] }
+            drawGame()
+            return
+          }
+
+          let rawResult = null
+
+          try {
+            rawResult = await instance.runPythonAsync(`
+import json
+
+payload = {"ok": False, "rows": 0, "cols": 0, "grid": []}
+
+if "game" in globals() and hasattr(game, "grid"):
+    raw_grid = [[1 if bool(cell) else 0 for cell in row] for row in game.grid]
+    rows = int(getattr(game, "rows", len(raw_grid)))
+    cols = int(getattr(game, "cols", len(raw_grid[0]) if raw_grid else 0))
+    payload = {"ok": True, "rows": rows, "cols": cols, "grid": raw_grid}
+
+json.dumps(payload)
+            `)
+
+            const text = typeof rawResult === 'string' ? rawResult : String(rawResult)
+            const payload = JSON.parse(text)
+
+            if (!payload.ok) {
+              gameState.value = { rows: 0, cols: 0, grid: [] }
+              drawGame()
+              return
+            }
+
+            applyGameState(payload.rows, payload.cols, payload.grid)
+          } catch (error) {
+            console.error(error)
+            gameState.value = { rows: 0, cols: 0, grid: [] }
+            drawGame()
+          } finally {
+            destroyPyProxy(rawResult)
+          }
+        }
+
+        function onCanvasWheel(event) {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return
+          }
+          const rect = canvas.getBoundingClientRect()
+          const localX = event.clientX - rect.left
+          const localY = event.clientY - rect.top
+
+          const worldX = (localX - cameraOffsetX.value) / zoomLevel.value
+          const worldY = (localY - cameraOffsetY.value) / zoomLevel.value
+
+          const scale = Math.exp(-event.deltaY * 0.0015)
+          const nextZoom = clamp(zoomLevel.value * scale, 4, 120)
+          if (nextZoom === zoomLevel.value) {
+            return
+          }
+
+          zoomLevel.value = nextZoom
+          cameraOffsetX.value = localX - worldX * nextZoom
+          cameraOffsetY.value = localY - worldY * nextZoom
+          drawGame()
+        }
+
+        function onCanvasPointerDown(event) {
+          if (event.button !== 0) {
+            return
+          }
+          isPanningCamera.value = true
+          lastPointerX = event.clientX
+          lastPointerY = event.clientY
+          if (event.currentTarget && typeof event.currentTarget.setPointerCapture === 'function') {
+            event.currentTarget.setPointerCapture(event.pointerId)
+          }
+        }
+
+        function onCanvasPointerMove(event) {
+          if (!isPanningCamera.value) {
+            return
+          }
+          const dx = event.clientX - lastPointerX
+          const dy = event.clientY - lastPointerY
+          lastPointerX = event.clientX
+          lastPointerY = event.clientY
+          cameraOffsetX.value += dx
+          cameraOffsetY.value += dy
+          drawGame()
+        }
+
+        function onCanvasPointerUp(event) {
+          if (!isPanningCamera.value) {
+            return
+          }
+          isPanningCamera.value = false
+          if (event.currentTarget && typeof event.currentTarget.releasePointerCapture === 'function') {
+            try {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            } catch {
+              // Ignore release errors when pointer capture has already ended.
+            }
+          }
+        }
+
+        function onKernelReady(payload) {
+          pyodideRef.value = payload.pyodide
+          void maybeAutoExecuteAll()
+        }
+
+        function onKernelUpdateMode(payload) {
+          const mode = payload && payload.mode === 'always-live' ? 'always-live' : 'after-execution'
+          kernelUpdateMode.value = mode
+          if (mode === 'after-execution') {
+            void refreshGameState()
+          }
+        }
+
+        function onWorkspaceSync(payload) {
+          if (kernelUpdateMode.value !== 'always-live') {
+            return
+          }
+
+          const workspace = payload && typeof payload === 'object' ? payload.workspace : null
+          if (!workspace || typeof workspace !== 'object') {
+            return
+          }
+
+          const game = workspace.game
+          if (!game || typeof game !== 'object') {
+            return
+          }
+
+          let gridProxy = null
+          let rawGrid = null
+          try {
+            rawGrid = game.grid
+            if (rawGrid && typeof rawGrid === 'object' && typeof rawGrid.toJs === 'function') {
+              gridProxy = rawGrid
+              rawGrid = rawGrid.toJs()
+            }
+          } catch {
+            destroyPyProxy(gridProxy)
+            return
+          }
+
+          if (!Array.isArray(rawGrid)) {
+            destroyPyProxy(rawGrid)
+            destroyPyProxy(gridProxy)
+            return
+          }
+
+          const rowsValue = Number(game.rows)
+          const colsValue = Number(game.cols)
+          const rows = Number.isFinite(rowsValue) && rowsValue > 0 ? rowsValue : rawGrid.length
+          const cols = Number.isFinite(colsValue) && colsValue > 0 ? colsValue : (rawGrid[0]?.length ?? 0)
+
+          applyGameState(rows, cols, rawGrid)
+          destroyPyProxy(rawGrid)
+          destroyPyProxy(gridProxy)
+        }
+
+        function onCellComplete() {
+          if (kernelUpdateMode.value === 'after-execution') {
+            void refreshGameState()
+          }
+        }
+
+        const pageStyle = computed(() => ({
+          '--left-pane-width': `${leftPaneWidth.value}px`,
+        }))
+
+        onMounted(() => {
+          if (window.innerWidth > DESKTOP_BREAKPOINT) {
+            leftPaneWidth.value = calculateDefaultSplit()
+          }
+          window.addEventListener('resize', onWindowResize)
+          void loadNotebook()
+          setInitialCamera()
+        })
+
+        onBeforeUnmount(() => {
+          stopResize()
+          window.removeEventListener('resize', onWindowResize)
+        })
+
+        return {
+          notebook,
+          vuepyterRef,
+          editorTheme,
+          pageStyle,
+          startResize,
+          resetSplit,
+          viewerCanvasRef,
+          isPanningCamera,
+          onCanvasWheel,
+          onCanvasPointerDown,
+          onCanvasPointerMove,
+          onCanvasPointerUp,
+          onKernelReady,
+          onKernelUpdateMode,
+          onWorkspaceSync,
+          onCellComplete,
+        }
+      },
+      template: `
+          <main class="page" :style="pageStyle">
+            <section class="left-pane">
+              <section class="left-pane-card" aria-label="Game of Life visualization">
+                <canvas
+                  ref="viewerCanvasRef"
+                  class="game-canvas"
+                  :class="{ 'is-panning': isPanningCamera }"
+                  @wheel.prevent="onCanvasWheel"
+                  @pointerdown="onCanvasPointerDown"
+                  @pointermove="onCanvasPointerMove"
+                  @pointerup="onCanvasPointerUp"
+                  @pointercancel="onCanvasPointerUp"
+                  @pointerleave="onCanvasPointerUp"
+                />
+              </section>
+            </section>
+
+            <div
+              class="splitter"
+              role="separator"
+              aria-label="Resize panes"
+              aria-orientation="vertical"
+              @pointerdown="startResize"
+              @dblclick="resetSplit"
+            />
+
+            <section class="right-pane">
+              <Vuepyter
+                ref="vuepyterRef"
+                class="editor-fill"
+                v-model="notebook"
+                :autosave-interval="1000"
+                :theme="editorTheme"
+                @ready="onKernelReady"
+                @kernel:update-mode="onKernelUpdateMode"
+                @workspace:sync="onWorkspaceSync"
+                @cell:complete="onCellComplete"
+              />
+            </section>
+          </main>
+        `,
+    })
+
+    app.mount('#app')
+  </script>
+</body>
+
+</html>
