@@ -29,3 +29,23 @@ echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf
 echo fs.inotify.max_user_instances=1024 | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 ```
+
+## Use the published package
+
+The HTML examples in this folder import Vuepyter from the local workspace build so they stay in sync during development:
+
+```html
+<link rel="stylesheet" href="../../vuepyter/dist/vuepyter.css" />
+<script type="module">
+  import { Vuepyter } from '/vuepyter/dist/index.mjs'
+</script>
+```
+
+When you test the installed npm package in your own Vue app, switch those paths to the published package name instead:
+
+```ts
+import { Vuepyter } from 'vuepyter'
+import 'vuepyter/style.css'
+```
+
+The quickstart example is the closest match to the npm consumer flow, so it is the best starting point for a new app.

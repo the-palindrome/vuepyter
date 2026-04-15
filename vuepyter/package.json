@@ -8,23 +8,40 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./style.css": "./dist/vuepyter.css",
+    "./dist/vuepyter.css": "./dist/vuepyter.css",
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
+  "sideEffects": [
+    "*.css"
+  ],
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && npm run build:types",
+    "build:types": "node ./scripts/prepare-package.mjs",
     "dev": "vite",
     "test": "vitest run --maxWorkers=1",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "e2e:dev": "vite tests/e2e --config vite.config.ts --host 127.0.0.1 --port 4173 --strictPort",
     "test:watch": "vitest --maxWorkers=1",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "pack:check": "npm pack --dry-run",
+    "lint:pkg": "publint",
+    "lint:types": "attw --pack . --exclude-entrypoints ./style.css ./dist/vuepyter.css",
+    "release:check": "npm run typecheck && npm test && npm run build && npm run pack:check && npm run lint:pkg && npm run lint:types",
+    "release:version": "changelogen --release && bumpp package.json"
   },
   "keywords": [
     "vue",
@@ -32,8 +49,19 @@
     "notebook",
     "pyodide"
   ],
-  "author": "",
+  "author": "the-palindrome",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/the-palindrome/vuepyter.git"
+  },
+  "homepage": "https://github.com/the-palindrome/vuepyter#readme",
+  "bugs": {
+    "url": "https://github.com/the-palindrome/vuepyter/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "peerDependencies": {
     "vue": "^3.4.0"
   },
@@ -50,12 +78,16 @@
     "lucide-vue-next": "^1.0.0"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
     "@playwright/test": "^1.59.1",
     "@types/node": "^22.15.2",
     "@vitejs/plugin-vue": "^6.0.0",
     "@vitest/coverage-v8": "^3.2.4",
     "@vue/test-utils": "^2.4.6",
+    "bumpp": "^10.2.3",
+    "changelogen": "^0.6.2",
     "jsdom": "^26.1.0",
+    "publint": "^0.3.15",
     "typescript": "^5.8.3",
     "vite": "^7.1.8",
     "vite-plugin-dts": "^4.5.4",

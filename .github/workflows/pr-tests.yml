@@ -44,6 +44,22 @@ jobs:
         working-directory: vuepyter
         run: npm test
 
+      - name: Build package
+        working-directory: vuepyter
+        run: npm run build
+
+      - name: Validate npm package contents
+        working-directory: vuepyter
+        run: npm run pack:check
+
+      - name: Lint package exports
+        working-directory: vuepyter
+        run: npm run lint:pkg
+
+      - name: Validate published types
+        working-directory: vuepyter
+        run: npm run lint:types
+
       - name: Run end-to-end tests
         working-directory: vuepyter
         run: npm run test:e2e

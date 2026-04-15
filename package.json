@@ -5,6 +5,8 @@
     "build": "npm --prefix vuepyter run build",
     "test": "npm --prefix vuepyter run test",
     "typecheck": "npm --prefix vuepyter run typecheck",
-    "example": "npm --prefix vuepyter exec -- vite . --host --port 5173 --open /examples/quickstart/quickstart.html"
+    "example": "npm --prefix vuepyter exec -- vite . --host --port 5173 --open /examples/quickstart/quickstart.html",
+    "pack:check": "npm --prefix vuepyter run pack:check",
+    "release:check": "npm --prefix vuepyter run release:check"
   }
 }

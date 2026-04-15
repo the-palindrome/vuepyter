@@ -26,6 +26,7 @@ From the repository root:
 npm run typecheck
 npm run test
 npm run build
+npm run release:check
 ```
 
 Or directly from the package:
@@ -35,4 +36,13 @@ cd vuepyter
 npm run typecheck
 npm run test
 npm run build
+npm run release:check
 ```
+
+## Publishing
+
+The npm package is published from the `vuepyter/` subdirectory.
+
+- Pull requests run the package test suite, build, and `npm pack --dry-run` in CI.
+- Releases are automated from `.github/workflows/release.yml` on git tags matching `v*` or `vuepyter-v*`.
+- The release workflow uses npm trusted publishing with GitHub Actions OIDC and publishes from `vuepyter/`.
