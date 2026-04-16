@@ -97,11 +97,12 @@ describe('composables/usePyodideKernel', () => {
     })
     expect(instance.loadPackage).not.toHaveBeenCalled()
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(1, 'import micropip')
+    expect(String(instance.runPythonAsync.mock.calls[1]?.[0])).toContain('MPLBACKEND')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(
-      2,
+      3,
       'await micropip.install(["numpy","pandas"])',
     )
-    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(3, 'x = 1')
+    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(4, 'x = 1')
     expect(kernel.status.value).toBe('ready')
     expect(kernel.isReady.value).toBe(true)
     expect(kernel.workspace.value).toEqual({ visible: 7 })
@@ -122,8 +123,9 @@ describe('composables/usePyodideKernel', () => {
       packages: ['micropip'],
     })
     expect(instance.loadPackage).not.toHaveBeenCalled()
-    expect(instance.runPythonAsync).toHaveBeenCalledTimes(1)
+    expect(instance.runPythonAsync).toHaveBeenCalledTimes(2)
     expect(instance.runPythonAsync).toHaveBeenCalledWith('import micropip')
+    expect(String(instance.runPythonAsync.mock.calls[1]?.[0])).toContain('MPLBACKEND')
   })
 
   it('falls back to explicit micropip loading when bootstrap packages are not importable yet', async () => {
@@ -145,6 +147,7 @@ describe('composables/usePyodideKernel', () => {
     expect(instance.loadPackage).toHaveBeenCalledWith('micropip')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(1, 'import micropip')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(2, 'import micropip')
+    expect(String(instance.runPythonAsync.mock.calls[2]?.[0])).toContain('MPLBACKEND')
   })
 
   it('executes a cell with stdout/stderr capture and execute_result output', async () => {
@@ -264,6 +267,55 @@ describe('composables/usePyodideKernel', () => {
     expect(onWorkspaceSync.mock.calls.length).toBeGreaterThan(0)
   })
 
+  it('captures matplotlib figures as display_data output', async () => {
+    const instance = createMockPyodide()
+    const matplotlibOutputProxy = {
+      toJs: vi.fn(() => [
+        {
+          output_type: 'display_data',
+          data: { 'image/png': 'abc123' },
+          metadata: {},
+        },
+      ]),
+      destroy: vi.fn(),
+    }
+
+    instance.runPythonAsync.mockImplementation(async (source: string) => {
+      if (source === 'import matplotlib.pyplot as plt\nplt.plot([1, 2, 3])\nplt.show()') {
+        return undefined
+      }
+      if (source.includes('__vuepyter_capture_matplotlib__')) {
+        return matplotlibOutputProxy
+      }
+      return undefined
+    })
+
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+    const kernel = usePyodideKernel()
+    await kernel.initialize()
+
+    const result = await kernel.executeCell({
+      source: 'import matplotlib.pyplot as plt\nplt.plot([1, 2, 3])\nplt.show()',
+    })
+
+    const executedSource = String(instance.runPythonAsync.mock.calls.at(-2)?.[0])
+
+    expect(result.outputs).toEqual([
+      {
+        output_type: 'display_data',
+        data: { 'image/png': 'abc123' },
+        metadata: {},
+      },
+    ])
+    expect(matplotlibOutputProxy.toJs).toHaveBeenCalledTimes(1)
+    expect(matplotlibOutputProxy.destroy).toHaveBeenCalledTimes(1)
+    expect(executedSource).toContain('MPLBACKEND')
+    expect(executedSource).toContain('plt.show()')
+    expect(String(instance.runPythonAsync.mock.calls.at(-1)?.[0])).toContain(
+      '__vuepyter_capture_matplotlib__',
+    )
+  })
+
   it('queues executions sequentially when multiple runs are requested', async () => {
     const instance = createMockPyodide()
     const first = deferred<unknown>()
@@ -282,6 +334,7 @@ describe('composables/usePyodideKernel', () => {
     vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
     const kernel = usePyodideKernel()
     await kernel.initialize()
+    instance.runPythonAsync.mockClear()
 
     const runFirst = kernel.executeCell({ source: 'first' })
     const runSecond = kernel.executeCell({ source: 'second' })

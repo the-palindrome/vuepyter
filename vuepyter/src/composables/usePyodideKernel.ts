@@ -220,9 +220,138 @@ async function installPyodidePackages(
   await pyodide.runPythonAsync(`await micropip.install(${encodedPackages})`)
 }
 
+const MATPLOTLIB_BOOTSTRAP_SOURCE = `
+import os as __vuepyter_os__
+
+__vuepyter_os__.environ.setdefault("MPLBACKEND", "Agg")
+`.trim()
+
+const MATPLOTLIB_EXECUTION_PREFIX = `
+import os as __vuepyter_os__
+import sys as __vuepyter_sys__
+
+__vuepyter_os__.environ["MPLBACKEND"] = "Agg"
+
+if "matplotlib" in __vuepyter_sys__.modules:
+    try:
+        import matplotlib as __vuepyter_matplotlib__
+        __vuepyter_matplotlib__.use("Agg", force=True)
+    except Exception:
+        pass
+
+if "matplotlib.pyplot" in __vuepyter_sys__.modules:
+    try:
+        import matplotlib.pyplot as __vuepyter_plt__
+        __vuepyter_plt__.switch_backend("Agg")
+        __vuepyter_plt__.close("all")
+    except Exception:
+        pass
+`.trim()
+
+const MATPLOTLIB_CAPTURE_SOURCE = `
+def __vuepyter_capture_matplotlib__():
+    try:
+        import base64 as __vuepyter_base64__
+        import io as __vuepyter_io__
+        import matplotlib.pyplot as __vuepyter_plt__
+    except Exception:
+        return []
+
+    __vuepyter_outputs__ = []
+
+    for __vuepyter_figure_number__ in list(__vuepyter_plt__.get_fignums()):
+        __vuepyter_figure__ = __vuepyter_plt__.figure(__vuepyter_figure_number__)
+        __vuepyter_buffer__ = __vuepyter_io__.BytesIO()
+        __vuepyter_figure__.savefig(
+            __vuepyter_buffer__,
+            format="png",
+            facecolor=__vuepyter_figure__.get_facecolor(),
+            edgecolor=__vuepyter_figure__.get_edgecolor(),
+        )
+        __vuepyter_outputs__.append({
+            "output_type": "display_data",
+            "data": {
+                "image/png": __vuepyter_base64__.b64encode(__vuepyter_buffer__.getvalue()).decode("ascii"),
+            },
+            "metadata": {},
+        })
+        __vuepyter_buffer__.close()
+
+    if __vuepyter_outputs__:
+        __vuepyter_plt__.close("all")
+
+    return __vuepyter_outputs__
+
+__vuepyter_capture_matplotlib__()
+`.trim()
+
+const MATPLOTLIB_SOURCE_HINT = /\bmatplotlib\b|\bpyplot\b|\bplt\./i
+const MATPLOTLIB_WORKSPACE_HINT_KEYS = ['plt', 'matplotlib', 'pyplot']
+
 function noop(): void {}
 
 const LIVE_WORKSPACE_SYNC_INTERVAL_MS = 48
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function shouldCaptureMatplotlibOutput(source: string, currentWorkspace: WorkspaceState): boolean {
+  if (MATPLOTLIB_SOURCE_HINT.test(source)) {
+    return true
+  }
+
+  return MATPLOTLIB_WORKSPACE_HINT_KEYS.some((key) => key in currentWorkspace)
+}
+
+function wrapMatplotlibSource(source: string): string {
+  return `${MATPLOTLIB_EXECUTION_PREFIX}\n\n${source}`
+}
+
+function normalizeDisplayOutputs(value: unknown): CellOutput[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const outputs: CellOutput[] = []
+  for (const entry of value) {
+    const raw = asRecord(entry)
+    if (!raw || raw.output_type !== 'display_data') {
+      continue
+    }
+
+    const data = asRecord(raw.data) ?? {}
+    const metadata = asRecord(raw.metadata) ?? {}
+    outputs.push({
+      output_type: 'display_data',
+      data,
+      metadata,
+    })
+  }
+
+  return outputs
+}
+
+async function captureMatplotlibOutputs(
+  pyodide: PyodideInterface,
+  onError?: (payload: KernelErrorPayload) => void,
+): Promise<CellOutput[]> {
+  try {
+    const rawOutputs = await pyodide.runPythonAsync(MATPLOTLIB_CAPTURE_SOURCE)
+    const plainOutputs = toPlainExecutionValue(rawOutputs)
+    maybeDestroy(rawOutputs)
+    return normalizeDisplayOutputs(plainOutputs)
+  } catch (error) {
+    emitError(onError, {
+      type: 'cell:display',
+      message: asError(error).message,
+      detail: error,
+    })
+    return []
+  }
+}
 
 function countLeadingIndent(line: string): number {
   let indent = 0
@@ -420,6 +549,7 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         })
 
         await loadMicropip(instance)
+        await instance.runPythonAsync(MATPLOTLIB_BOOTSTRAP_SOURCE)
         await installPyodidePackages(instance, options.pyodidePackages ?? [])
         if (options.pyodideInitCode?.trim()) {
           await instance.runPythonAsync(options.pyodideInitCode)
@@ -486,7 +616,9 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
       const outputs: CellOutput[] = []
       let stdout = ''
       let stderr = ''
-      const executionSource = liveMode ? instrumentAlwaysLiveSource(request.source) : request.source
+      const needsMatplotlibCapture = shouldCaptureMatplotlibOutput(request.source, workspace.value)
+      const preparedSource = needsMatplotlibCapture ? wrapMatplotlibSource(request.source) : request.source
+      const executionSource = liveMode ? instrumentAlwaysLiveSource(preparedSource) : preparedSource
 
       const maybeSyncWorkspaceLive = (): void => {
         liveSyncRequested = true
@@ -567,6 +699,10 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         const result = await instance.runPythonAsync(executionSource)
         const plainResult = toPlainExecutionValue(result)
         pushStreams()
+
+        if (needsMatplotlibCapture) {
+          outputs.push(...(await captureMatplotlibOutputs(instance, options.onError)))
+        }
 
         if (result !== undefined) {
           outputs.push({
