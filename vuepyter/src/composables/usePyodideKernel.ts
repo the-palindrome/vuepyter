@@ -11,6 +11,7 @@ import type {
   KernelUpdateMode,
   LoadPyodide,
   PyodideInterface,
+  PyodideStdIOOptions,
   UsePyodideKernelOptions,
   WorkspaceState,
 } from '@/types'
@@ -291,6 +292,105 @@ const MATPLOTLIB_SOURCE_HINT = /\bmatplotlib\b|\bpyplot\b|\bplt\./i
 const MATPLOTLIB_WORKSPACE_HINT_KEYS = ['plt', 'matplotlib', 'pyplot']
 
 function noop(): void {}
+
+type StdIOCaptureMode = 'unknown' | 'raw' | 'batched'
+
+interface StdIOCapture {
+  raw: (value: number | string) => void
+  batched: (value: string) => void
+  flush: () => void
+}
+
+function createStdIOCapture(
+  append: (chunk: string) => void,
+  onData: () => void,
+): StdIOCapture {
+  let mode: StdIOCaptureMode = 'unknown'
+  let decoder: TextDecoder | null = typeof TextDecoder === 'function' ? new TextDecoder() : null
+
+  const push = (chunk: string): void => {
+    if (!chunk) {
+      return
+    }
+    append(chunk)
+    onData()
+  }
+
+  return {
+    batched: (value: string) => {
+      if (mode === 'raw') {
+        return
+      }
+      mode = 'batched'
+      push(String(value))
+    },
+    raw: (value: number | string) => {
+      if (mode === 'batched') {
+        return
+      }
+      mode = 'raw'
+
+      if (typeof value === 'string') {
+        push(value)
+        return
+      }
+
+      if (!Number.isFinite(value)) {
+        return
+      }
+
+      const byte = Math.trunc(value) & 0xff
+      if (!decoder) {
+        push(String.fromCharCode(byte))
+        return
+      }
+
+      const decoded = decoder.decode(Uint8Array.of(byte), { stream: true })
+      if (decoded) {
+        push(decoded)
+      }
+    },
+    flush: () => {
+      if (mode !== 'raw' || !decoder) {
+        return
+      }
+      const tail = decoder.decode()
+      if (tail) {
+        append(tail)
+      }
+      decoder = new TextDecoder()
+    },
+  }
+}
+
+function setPyodideStreamHandler(
+  setStream: unknown,
+  capture: StdIOCapture,
+): void {
+  if (typeof setStream !== 'function') {
+    return
+  }
+
+  const setter = setStream as (options: PyodideStdIOOptions) => void
+  try {
+    setter({ raw: capture.raw })
+  } catch {
+    setter({ batched: capture.batched })
+  }
+}
+
+function clearPyodideStreamHandler(setStream: unknown): void {
+  if (typeof setStream !== 'function') {
+    return
+  }
+
+  const setter = setStream as (options: PyodideStdIOOptions) => void
+  try {
+    setter({ raw: noop })
+  } catch {
+    setter({ batched: noop })
+  }
+}
 
 const LIVE_WORKSPACE_SYNC_INTERVAL_MS = 48
 
@@ -626,7 +726,30 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         liveSyncRequested = true
       }
 
+      const stdoutCapture = createStdIOCapture(
+        (chunk) => {
+          stdout += chunk
+        },
+        () => {
+          if (liveMode) {
+            maybeSyncWorkspaceLive()
+          }
+        },
+      )
+      const stderrCapture = createStdIOCapture(
+        (chunk) => {
+          stderr += chunk
+        },
+        () => {
+          if (liveMode) {
+            maybeSyncWorkspaceLive()
+          }
+        },
+      )
+
       const pushStreams = (): void => {
+        stdoutCapture.flush()
+        stderrCapture.flush()
         if (stdout) {
           outputs.push({
             output_type: 'stream',
@@ -645,26 +768,8 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         }
       }
 
-      if (typeof instance.setStdout === 'function') {
-        instance.setStdout({
-          batched: (value: string) => {
-            stdout += value
-            if (liveMode) {
-              maybeSyncWorkspaceLive()
-            }
-          },
-        })
-      }
-      if (typeof instance.setStderr === 'function') {
-        instance.setStderr({
-          batched: (value: string) => {
-            stderr += value
-            if (liveMode) {
-              maybeSyncWorkspaceLive()
-            }
-          },
-        })
-      }
+      setPyodideStreamHandler(instance.setStdout, stdoutCapture)
+      setPyodideStreamHandler(instance.setStderr, stderrCapture)
 
       if (liveMode) {
         try {
@@ -768,12 +873,8 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
             liveSyncTimer = null
           }
         }
-        if (typeof instance.setStdout === 'function') {
-          instance.setStdout({ batched: noop })
-        }
-        if (typeof instance.setStderr === 'function') {
-          instance.setStderr({ batched: noop })
-        }
+        clearPyodideStreamHandler(instance.setStdout)
+        clearPyodideStreamHandler(instance.setStderr)
         syncWorkspace()
         status.value = pyodide.value ? 'ready' : 'error'
       }

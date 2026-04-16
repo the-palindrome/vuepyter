@@ -34,16 +34,20 @@ function createMockPyodide(): MockPyodide {
     ['callable', () => 'skip'],
   ])
 
-  let stdoutHandler: ((value: string) => void) | undefined
-  let stderrHandler: ((value: string) => void) | undefined
+  let stdoutBatchedHandler: ((value: string) => void) | undefined
+  let stderrBatchedHandler: ((value: string) => void) | undefined
+  let stdoutRawHandler: ((value: number | string) => void) | undefined
+  let stderrRawHandler: ((value: number | string) => void) | undefined
 
   const instance = {
     runPythonAsync: vi.fn(async () => undefined),
     setStdout: vi.fn((options: PyodideStdIOOptions) => {
-      stdoutHandler = options.batched
+      stdoutBatchedHandler = options.batched
+      stdoutRawHandler = options.raw
     }),
     setStderr: vi.fn((options: PyodideStdIOOptions) => {
-      stderrHandler = options.batched
+      stderrBatchedHandler = options.batched
+      stderrRawHandler = options.raw
     }),
     loadPackage: vi.fn(async () => undefined),
     interruptExecution: vi.fn(() => undefined),
@@ -59,10 +63,24 @@ function createMockPyodide(): MockPyodide {
     close: vi.fn(),
     terminate: vi.fn(),
     __emitStdout(value: string) {
-      stdoutHandler?.(value)
+      if (stdoutRawHandler) {
+        const bytes = new TextEncoder().encode(value)
+        for (const byte of bytes) {
+          stdoutRawHandler(byte)
+        }
+        return
+      }
+      stdoutBatchedHandler?.(value)
     },
     __emitStderr(value: string) {
-      stderrHandler?.(value)
+      if (stderrRawHandler) {
+        const bytes = new TextEncoder().encode(value)
+        for (const byte of bytes) {
+          stderrRawHandler(byte)
+        }
+        return
+      }
+      stderrBatchedHandler?.(value)
     },
     __globalsMap: globalsMap,
   } as unknown as MockPyodide
@@ -193,8 +211,8 @@ describe('composables/usePyodideKernel', () => {
 
     const finalStdout = instance.setStdout.mock.calls.at(-1)?.[0] as PyodideStdIOOptions
     const finalStderr = instance.setStderr.mock.calls.at(-1)?.[0] as PyodideStdIOOptions
-    expect(typeof finalStdout.batched).toBe('function')
-    expect(typeof finalStderr.batched).toBe('function')
+    expect(typeof finalStdout.raw).toBe('function')
+    expect(typeof finalStderr.raw).toBe('function')
   })
 
   it('returns stream + error outputs when execution fails', async () => {
