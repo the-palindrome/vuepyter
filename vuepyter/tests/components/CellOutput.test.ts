@@ -95,6 +95,29 @@ describe('components/CellOutput', () => {
     expect(wrapper.get('.vuepyter-output-wrap').attributes('style')).toContain('max-height: 240px;')
   })
 
+  it('does not constrain output height when image output is present', () => {
+    const outputs: CellOutputType[] = [
+      {
+        output_type: 'display_data',
+        data: {
+          'image/png': 'iVBORw0KGgoAAAANSUhEUgAAAAUA',
+        },
+        metadata: {},
+      },
+    ]
+
+    const wrapper = mount(CellOutput, {
+      props: {
+        outputs,
+        maxOutputHeight: 240,
+      },
+    })
+
+    const style = wrapper.get('.vuepyter-output-wrap').attributes('style')
+    expect(style).toContain('max-height: none;')
+    expect(style).toContain('overflow: visible;')
+  })
+
   it('can hide empty output container when hideEmpty is enabled', () => {
     const wrapper = mount(CellOutput, {
       props: {

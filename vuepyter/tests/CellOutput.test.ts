@@ -57,6 +57,8 @@ describe('CellOutput', () => {
 
     const image = wrapper.get('img')
     expect(image.attributes('src')).toBe('data:image/png;base64,abc123')
+    expect(wrapper.get('.vuepyter-output-wrap').attributes('style')).toContain('max-height: none;')
+    expect(wrapper.get('.vuepyter-output-wrap').attributes('style')).toContain('overflow: visible;')
   })
 
   it('renders error traceback', () => {
