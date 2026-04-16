@@ -310,6 +310,7 @@ describe('composables/usePyodideKernel', () => {
     expect(matplotlibOutputProxy.toJs).toHaveBeenCalledTimes(1)
     expect(matplotlibOutputProxy.destroy).toHaveBeenCalledTimes(1)
     expect(executedSource).toContain('MPLBACKEND')
+    expect(executedSource).toContain('__vuepyter_plt__.show = __vuepyter_matplotlib_show__')
     expect(executedSource).toContain('plt.show()')
     expect(String(instance.runPythonAsync.mock.calls.at(-1)?.[0])).toContain(
       '__vuepyter_capture_matplotlib__',

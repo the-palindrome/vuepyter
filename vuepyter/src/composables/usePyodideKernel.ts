@@ -228,24 +228,26 @@ __vuepyter_os__.environ.setdefault("MPLBACKEND", "Agg")
 
 const MATPLOTLIB_EXECUTION_PREFIX = `
 import os as __vuepyter_os__
-import sys as __vuepyter_sys__
 
 __vuepyter_os__.environ["MPLBACKEND"] = "Agg"
 
-if "matplotlib" in __vuepyter_sys__.modules:
-    try:
-        import matplotlib as __vuepyter_matplotlib__
-        __vuepyter_matplotlib__.use("Agg", force=True)
-    except Exception:
-        pass
+try:
+    import matplotlib as __vuepyter_matplotlib__
+    __vuepyter_matplotlib__.use("Agg", force=True)
+except Exception:
+    pass
 
-if "matplotlib.pyplot" in __vuepyter_sys__.modules:
-    try:
-        import matplotlib.pyplot as __vuepyter_plt__
-        __vuepyter_plt__.switch_backend("Agg")
-        __vuepyter_plt__.close("all")
-    except Exception:
-        pass
+try:
+    import matplotlib.pyplot as __vuepyter_plt__
+    __vuepyter_plt__.switch_backend("Agg")
+    __vuepyter_plt__.close("all")
+
+    def __vuepyter_matplotlib_show__(*args, **kwargs):
+        return None
+
+    __vuepyter_plt__.show = __vuepyter_matplotlib_show__
+except Exception:
+    pass
 `.trim()
 
 const MATPLOTLIB_CAPTURE_SOURCE = `
