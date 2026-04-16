@@ -7,7 +7,19 @@ This repository is organized as a workspace root.
 - `vuepyter/` — the Vuepyter package (source, tests, build config, npm scripts)
 - `docs/` — documentation content
 - `examples/` — usage examples and demos
-- `SPEC.md` — implementation specification
+
+## Documentation
+
+The repository now includes a full documentation suite in [`docs/`](./docs/README.md):
+
+- [Getting Started](./docs/getting-started.md)
+- [Build a Notebook App](./docs/tutorial-build-a-notebook-app.md)
+- [API Reference](./docs/api-reference.md)
+- [Architecture](./docs/architecture.md)
+- [Examples Guide](./docs/examples.md)
+- [Troubleshooting](./docs/troubleshooting.md)
+- [Contributing](./docs/contributing.md)
+- [Keyboard Shortcuts](./docs/keyboard-shortcuts.md)
 
 ## Getting started
 

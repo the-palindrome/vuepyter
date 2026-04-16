@@ -2,6 +2,8 @@
 
 This folder contains simple usage examples for `vuepyter`.
 
+For a fuller walkthrough of what each example teaches, see [docs/examples.md](../docs/examples.md).
+
 ## Files
 
 - `quickstart/quickstart.html` - runnable quickstart example page.

@@ -2,6 +2,17 @@
 
 Vuepyter is a lightweight Jupyter Notebook editor for Vue 3. It renders notebook cells, keeps notebook state in sync with `v-model`, and runs Python in the browser through Pyodide.
 
+## Documentation
+
+The repository includes a full documentation suite for Vuepyter:
+
+- Getting started: https://github.com/the-palindrome/vuepyter/blob/main/docs/getting-started.md
+- Tutorial: https://github.com/the-palindrome/vuepyter/blob/main/docs/tutorial-build-a-notebook-app.md
+- API reference: https://github.com/the-palindrome/vuepyter/blob/main/docs/api-reference.md
+- Architecture: https://github.com/the-palindrome/vuepyter/blob/main/docs/architecture.md
+- Examples guide: https://github.com/the-palindrome/vuepyter/blob/main/docs/examples.md
+- Troubleshooting: https://github.com/the-palindrome/vuepyter/blob/main/docs/troubleshooting.md
+
 ## Install
 
 Install Vuepyter alongside Vue:
@@ -63,6 +74,8 @@ const notebook = ref({
 
 `v-model` accepts either a notebook document or a serialized notebook document. Vuepyter normalizes the data internally, so you can start with a minimal notebook and let the component fill in the rest.
 
+Vuepyter emits serialized notebook documents from `update:modelValue`. If you want your bound state shape to stay stable in TypeScript, initialize the notebook as a serialized document from the start.
+
 ## Register as a plugin
 
 Vuepyter also exposes a default plugin export that registers the component globally. This is useful when you want to install it once on the app instance:
@@ -96,7 +109,9 @@ Common runtime props:
 />
 ```
 
-Vuepyter uses its bundled Pyodide runtime by default. Override `pyodideUrl` only if you need a mirror or a different version. `pyodidePackages` installs extra packages before execution, and `pyodideInitCode` runs once after the runtime loads. `kernelUpdateMode` controls whether workspace state updates after a cell runs or live while you type.
+Vuepyter uses its bundled Pyodide runtime by default. Override `pyodideUrl` only if you need a mirror or a different version. `pyodidePackages` installs extra packages before execution, and `pyodideInitCode` runs once after the runtime loads. `kernelUpdateMode` controls whether workspace state updates after a cell runs or attempts additional syncs while a long-running cell is still executing.
+
+`kernelUpdateMode="always-live"` is experimental. It improves workspace syncing during top-level loops, but it is not a full streaming execution mode.
 
 ## Styling and themes
 
