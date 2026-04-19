@@ -12,6 +12,8 @@ For a fuller walkthrough of what each example teaches, see [docs/examples.md](..
 - `game-of-life/game-of-life.ipynb` - blank notebook used by the game-of-life example.
 - `nn-visualizer/nn-visualizer.html` - two-panel blank visualizer starter with an empty left pane and empty notebook.
 - `nn-visualizer/nn-visualizer.ipynb` - empty notebook used by the nn-visualizer starter.
+- `graph-theory/graph-theory.html` - two-panel starter with an intentionally blank left pane.
+- `graph-theory/graph-theory.ipynb` - empty notebook used by the graph-theory starter.
 - `cart-pole/cart-pole.html` - two-panel real-time inverted-pendulum example with a minimalist physics visualization.
 - `cart-pole/cart-pole.ipynb` - notebook used by the cart-pole example, including a simple stabilizing controller.
 

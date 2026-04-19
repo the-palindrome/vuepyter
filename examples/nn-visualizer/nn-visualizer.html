@@ -65,6 +65,7 @@
     }
 
     .left-pane-card {
+      position: relative;
       height: 100%;
       min-height: 0;
       box-sizing: border-box;
@@ -72,6 +73,50 @@
       border-radius: 0.7rem;
       background: #ffffff;
       box-shadow: 0 1px 2px rgba(17, 24, 39, 0.06);
+    }
+
+    .graph-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: grab;
+      background:
+        radial-gradient(circle at 20% 20%, #f8fbff 0%, #f2f5fb 60%, #eef2f7 100%);
+    }
+
+    .graph-canvas.is-panning {
+      cursor: grabbing;
+    }
+
+    .graph-overlay {
+      position: absolute;
+      top: 0.7rem;
+      left: 0.7rem;
+      display: grid;
+      gap: 0.2rem;
+      pointer-events: none;
+      padding: 0.5rem 0.6rem;
+      border-radius: 0.55rem;
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(4px);
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.1);
+    }
+
+    .graph-title {
+      margin: 0;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #334155;
+    }
+
+    .graph-meta {
+      margin: 0;
+      font-size: 0.72rem;
+      color: #475569;
+      line-height: 1.25;
     }
 
     body.is-resizing,
@@ -108,6 +153,152 @@
     const NOTEBOOK_URL = './nn-visualizer.ipynb'
     const DESKTOP_BREAKPOINT = 960
 
+    const GRAPH_SNAPSHOT_SOURCE = `
+import json
+
+def __vuepyter_is_graph_node__(obj):
+    try:
+        prevs = getattr(obj, "prevs")
+    except Exception:
+        return False
+    return isinstance(prevs, list) and hasattr(obj, "value")
+
+def __vuepyter_collect_graph_nodes__(value, depth=0, seen=None):
+    if seen is None:
+        seen = set()
+
+    key = id(value)
+    if key in seen:
+        return []
+    seen.add(key)
+
+    if __vuepyter_is_graph_node__(value):
+        return [value]
+
+    if depth >= 2:
+        return []
+
+    if isinstance(value, dict):
+        out = []
+        for item in list(value.values())[:64]:
+            out.extend(__vuepyter_collect_graph_nodes__(item, depth + 1, seen))
+        return out
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        out = []
+        for item in list(value)[:64]:
+            out.extend(__vuepyter_collect_graph_nodes__(item, depth + 1, seen))
+        return out
+
+    params_fn = getattr(value, "parameters", None)
+    if callable(params_fn):
+        try:
+            params = params_fn()
+        except Exception:
+            params = None
+        if isinstance(params, dict):
+            out = []
+            for item in list(params.values())[:64]:
+                out.extend(__vuepyter_collect_graph_nodes__(item, depth + 1, seen))
+            return out
+
+    return []
+
+def __vuepyter_resolve_prev__(edge):
+    try:
+        prev = getattr(edge, "prev")
+    except Exception:
+        prev = None
+    if prev is not None:
+        return prev
+    try:
+        return edge[0]
+    except Exception:
+        return None
+
+def __vuepyter_number__(value):
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    if value != value:
+        return "nan"
+    if value == float("inf"):
+        return "inf"
+    if value == float("-inf"):
+        return "-inf"
+    return round(value, 8)
+
+roots_by_id = {}
+stack = []
+
+for __name, __value in list(globals().items()):
+    if __name.startswith("_"):
+        continue
+    discovered = __vuepyter_collect_graph_nodes__(__value, depth=0, seen=set())
+    for __node in discovered:
+        __key = str(id(__node))
+        roots_by_id.setdefault(__key, []).append(str(__name))
+        stack.append(__node)
+
+nodes = {}
+edges = []
+seen = set()
+
+while stack:
+    node = stack.pop()
+    node_id = str(id(node))
+    if node_id in seen:
+        continue
+    seen.add(node_id)
+
+    value = getattr(node, "value", None)
+    grad = getattr(node, "backwards_grad", None)
+    has_shape = hasattr(value, "shape")
+    shape = []
+    if has_shape:
+        try:
+            shape = [int(dim) for dim in tuple(value.shape)]
+        except Exception:
+            shape = []
+
+    value_summary = None
+    if not has_shape or len(shape) == 0:
+        value_summary = __vuepyter_number__(value)
+
+    grad_summary = __vuepyter_number__(grad)
+
+    nodes[node_id] = {
+        "id": node_id,
+        "kind": type(node).__name__,
+        "shape": shape,
+        "value": value_summary,
+        "grad": grad_summary,
+        "roots": [],
+    }
+
+    for edge in getattr(node, "prevs", []) or []:
+        prev = __vuepyter_resolve_prev__(edge)
+        if prev is None:
+            continue
+        prev_id = str(id(prev))
+        edges.append({"source": prev_id, "target": node_id})
+        if prev_id not in seen:
+            stack.append(prev)
+
+for node_id, names in roots_by_id.items():
+    if node_id in nodes:
+        nodes[node_id]["roots"] = sorted(set(names))
+
+payload = {
+    "ok": True,
+    "nodes": list(nodes.values()),
+    "edges": edges,
+}
+
+json.dumps(payload)
+    `.trim()
+
     const app = createApp({
       components: {
         Vuepyter,
@@ -123,10 +314,33 @@
           typeof window === 'undefined' ? 380 : Math.max(380, Math.floor((window.innerWidth - 24) / 2)),
         )
         const resizing = ref(false)
+        const pyodideRef = ref(null)
+        const viewerCanvasRef = ref(null)
+        const graphNodes = ref([])
+        const graphEdges = ref([])
+        const cameraScale = ref(1)
+        const cameraOffsetX = ref(0)
+        const cameraOffsetY = ref(0)
+        const isPanningCamera = ref(false)
+        const hasMovedCamera = ref(false)
 
         const editorTheme = {
           '--vuepyter-bg': '#ffffff',
           '--vuepyter-cell-bg': '#ffffff',
+        }
+
+        let lastPointerX = 0
+        let lastPointerY = 0
+        let graphRefreshInFlight = false
+        let graphRefreshQueued = false
+        let graphRefreshTimer = null
+
+        const graphPositions = new Map()
+        let graphBounds = {
+          minX: -120,
+          maxX: 120,
+          minY: -80,
+          maxY: 80,
         }
 
         function clamp(value, min, max) {
@@ -150,6 +364,439 @@
           return clamp(totalWidth / 2, minLeft, maxLeft)
         }
 
+        function destroyPyProxy(value) {
+          if (value && typeof value === 'object' && typeof value.destroy === 'function') {
+            try {
+              value.destroy()
+            } catch {
+              // Ignore proxy cleanup errors.
+            }
+          }
+        }
+
+        function getCanvasMetrics() {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return null
+          }
+          const rect = canvas.getBoundingClientRect()
+          const width = Math.max(1, rect.width)
+          const height = Math.max(1, rect.height)
+          const dpr = window.devicePixelRatio || 1
+          const pixelWidth = Math.max(1, Math.floor(width * dpr))
+          const pixelHeight = Math.max(1, Math.floor(height * dpr))
+          if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+            canvas.width = pixelWidth
+            canvas.height = pixelHeight
+          }
+          const ctx = canvas.getContext('2d')
+          if (!ctx) {
+            return null
+          }
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          return { ctx, width, height }
+        }
+
+        function hashString(value) {
+          const text = String(value)
+          let hash = 2166136261
+          for (let index = 0; index < text.length; index += 1) {
+            hash ^= text.charCodeAt(index)
+            hash +=
+              (hash << 1)
+              + (hash << 4)
+              + (hash << 7)
+              + (hash << 8)
+              + (hash << 24)
+          }
+          return hash >>> 0
+        }
+
+        function normalizeNode(rawNode) {
+          if (!rawNode || typeof rawNode !== 'object') {
+            return null
+          }
+
+          const id = rawNode.id == null ? '' : String(rawNode.id)
+          if (!id) {
+            return null
+          }
+
+          const roots = Array.isArray(rawNode.roots)
+            ? rawNode.roots.map((name) => String(name)).filter(Boolean)
+            : []
+          const shape = Array.isArray(rawNode.shape)
+            ? rawNode.shape
+              .map((dim) => Number(dim))
+              .filter((dim) => Number.isFinite(dim))
+              .map((dim) => Math.trunc(dim))
+            : []
+
+          return {
+            id,
+            kind: typeof rawNode.kind === 'string' && rawNode.kind ? rawNode.kind : 'Node',
+            roots,
+            shape,
+            value: rawNode.value ?? null,
+            grad: rawNode.grad ?? null,
+          }
+        }
+
+        function rebuildGraphLayout() {
+          graphPositions.clear()
+          const nodes = graphNodes.value
+          if (!Array.isArray(nodes) || nodes.length === 0) {
+            graphBounds = {
+              minX: -120,
+              maxX: 120,
+              minY: -80,
+              maxY: 80,
+            }
+            return
+          }
+
+          const incomingByNode = new Map(nodes.map((node) => [node.id, []]))
+          for (const edge of graphEdges.value) {
+            if (!edge || typeof edge !== 'object') {
+              continue
+            }
+            const source = edge.source == null ? '' : String(edge.source)
+            const target = edge.target == null ? '' : String(edge.target)
+            if (!incomingByNode.has(target) || !incomingByNode.has(source)) {
+              continue
+            }
+            incomingByNode.get(target).push(source)
+          }
+
+          const depthMemo = new Map()
+          const depthOf = (nodeId, chain = new Set()) => {
+            if (depthMemo.has(nodeId)) {
+              return depthMemo.get(nodeId)
+            }
+            if (chain.has(nodeId)) {
+              return 0
+            }
+            chain.add(nodeId)
+            const incoming = incomingByNode.get(nodeId) ?? []
+            let depth = 0
+            for (const parentId of incoming) {
+              depth = Math.max(depth, depthOf(parentId, chain) + 1)
+            }
+            chain.delete(nodeId)
+            depthMemo.set(nodeId, depth)
+            return depth
+          }
+
+          for (const node of nodes) {
+            depthOf(node.id)
+          }
+
+          const columns = new Map()
+          for (const node of nodes) {
+            const depth = depthMemo.get(node.id) ?? 0
+            if (!columns.has(depth)) {
+              columns.set(depth, [])
+            }
+            columns.get(depth).push(node)
+          }
+
+          const sortedDepths = [...columns.keys()].sort((a, b) => a - b)
+          const columnSpacing = 200
+          const rowSpacing = 76
+          const padding = 26
+
+          let minX = Number.POSITIVE_INFINITY
+          let maxX = Number.NEGATIVE_INFINITY
+          let minY = Number.POSITIVE_INFINITY
+          let maxY = Number.NEGATIVE_INFINITY
+
+          for (const depth of sortedDepths) {
+            const column = columns.get(depth) ?? []
+            column.sort((a, b) => {
+              const aRoot = a.roots.length > 0 ? 0 : 1
+              const bRoot = b.roots.length > 0 ? 0 : 1
+              if (aRoot !== bRoot) {
+                return aRoot - bRoot
+              }
+              return a.id.localeCompare(b.id)
+            })
+
+            const columnHeight = (column.length - 1) * rowSpacing
+            for (let index = 0; index < column.length; index += 1) {
+              const node = column[index]
+              const jitter = ((hashString(node.id) % 1000) / 1000 - 0.5) * 16
+              const x = depth * columnSpacing
+              const y = index * rowSpacing - columnHeight / 2 + jitter
+              graphPositions.set(node.id, { x, y })
+              minX = Math.min(minX, x - padding)
+              maxX = Math.max(maxX, x + padding)
+              minY = Math.min(minY, y - padding)
+              maxY = Math.max(maxY, y + padding)
+            }
+          }
+
+          graphBounds = {
+            minX,
+            maxX,
+            minY,
+            maxY,
+          }
+        }
+
+        function fitCameraToGraph(force = false) {
+          if (!force && hasMovedCamera.value) {
+            return
+          }
+
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { width, height } = metrics
+          const worldWidth = Math.max(1, graphBounds.maxX - graphBounds.minX)
+          const worldHeight = Math.max(1, graphBounds.maxY - graphBounds.minY)
+          const targetScale = clamp(
+            Math.min((width - 48) / worldWidth, (height - 48) / worldHeight),
+            0.25,
+            2.4,
+          )
+
+          const centerX = (graphBounds.minX + graphBounds.maxX) / 2
+          const centerY = (graphBounds.minY + graphBounds.maxY) / 2
+
+          cameraScale.value = targetScale
+          cameraOffsetX.value = width / 2 - centerX * targetScale
+          cameraOffsetY.value = height / 2 - centerY * targetScale
+        }
+
+        function nodeFill(node) {
+          if (node.kind === 'Scalar') {
+            return '#3b82f6'
+          }
+          if (node.kind === 'Tensor') {
+            return '#f59e0b'
+          }
+          return '#64748b'
+        }
+
+        function nodeLabel(node) {
+          if (node.roots.length > 0) {
+            return node.roots[0]
+          }
+          if (node.kind === 'Tensor') {
+            if (node.shape.length > 0) {
+              return `T[${node.shape.join('x')}]`
+            }
+            return 'Tensor'
+          }
+          if (node.kind === 'Scalar') {
+            return 'Scalar'
+          }
+          return node.kind
+        }
+
+        function nodeHint(node) {
+          if (node.kind === 'Scalar' && typeof node.value === 'number') {
+            return String(node.value)
+          }
+          if (node.kind === 'Tensor' && node.shape.length > 0) {
+            return `shape ${node.shape.join('x')}`
+          }
+          return ''
+        }
+
+        function drawGraph() {
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { ctx, width, height } = metrics
+
+          ctx.clearRect(0, 0, width, height)
+          ctx.fillStyle = '#f8fbff'
+          ctx.fillRect(0, 0, width, height)
+
+          const nodes = graphNodes.value
+          if (!Array.isArray(nodes) || nodes.length === 0) {
+            ctx.fillStyle = '#64748b'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'middle'
+            ctx.font = '13px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif'
+            ctx.fillText('Run cells that create Scalar/Tensor objects to view the graph.', width / 2, height / 2)
+            return
+          }
+
+          const scale = cameraScale.value
+          const offsetX = cameraOffsetX.value
+          const offsetY = cameraOffsetY.value
+
+          ctx.save()
+          ctx.translate(offsetX, offsetY)
+          ctx.scale(scale, scale)
+
+          const minX = (-offsetX) / scale - 40
+          const maxX = (width - offsetX) / scale + 40
+          const minY = (-offsetY) / scale - 40
+          const maxY = (height - offsetY) / scale + 40
+
+          const gridStep = 120
+          ctx.beginPath()
+          ctx.strokeStyle = '#e8eef7'
+          ctx.lineWidth = 1 / scale
+
+          for (let x = Math.floor(minX / gridStep) * gridStep; x <= maxX; x += gridStep) {
+            ctx.moveTo(x, minY)
+            ctx.lineTo(x, maxY)
+          }
+          for (let y = Math.floor(minY / gridStep) * gridStep; y <= maxY; y += gridStep) {
+            ctx.moveTo(minX, y)
+            ctx.lineTo(maxX, y)
+          }
+          ctx.stroke()
+
+          ctx.beginPath()
+          ctx.strokeStyle = '#9aa8be'
+          ctx.lineWidth = 1.4 / scale
+          for (const edge of graphEdges.value) {
+            const source = graphPositions.get(String(edge.source))
+            const target = graphPositions.get(String(edge.target))
+            if (!source || !target) {
+              continue
+            }
+            ctx.moveTo(source.x, source.y)
+            ctx.lineTo(target.x, target.y)
+          }
+          ctx.stroke()
+
+          for (const node of nodes) {
+            const point = graphPositions.get(node.id)
+            if (!point) {
+              continue
+            }
+
+            ctx.beginPath()
+            ctx.fillStyle = nodeFill(node)
+            ctx.arc(point.x, point.y, 14, 0, Math.PI * 2)
+            ctx.fill()
+
+            ctx.strokeStyle = '#0f172a'
+            ctx.lineWidth = 1.2 / scale
+            ctx.stroke()
+          }
+
+          ctx.font = `${12 / scale}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif`
+          ctx.textAlign = 'left'
+          ctx.textBaseline = 'middle'
+
+          for (const node of nodes) {
+            const point = graphPositions.get(node.id)
+            if (!point) {
+              continue
+            }
+
+            const label = nodeLabel(node)
+            const hint = nodeHint(node)
+
+            ctx.fillStyle = '#1e293b'
+            ctx.fillText(label, point.x + 20, point.y - 6 / scale)
+
+            if (hint) {
+              ctx.fillStyle = '#475569'
+              ctx.fillText(hint, point.x + 20, point.y + 8 / scale)
+            }
+          }
+
+          ctx.restore()
+        }
+
+        function applyGraphPayload(payload) {
+          if (!payload || typeof payload !== 'object') {
+            graphNodes.value = []
+            graphEdges.value = []
+            rebuildGraphLayout()
+            drawGraph()
+            return
+          }
+
+          const nextNodes = Array.isArray(payload.nodes)
+            ? payload.nodes.map(normalizeNode).filter((node) => node !== null)
+            : []
+          const validIds = new Set(nextNodes.map((node) => node.id))
+          const nextEdges = Array.isArray(payload.edges)
+            ? payload.edges
+              .map((edge) => {
+                if (!edge || typeof edge !== 'object') {
+                  return null
+                }
+                const source = edge.source == null ? '' : String(edge.source)
+                const target = edge.target == null ? '' : String(edge.target)
+                if (!source || !target || !validIds.has(source) || !validIds.has(target)) {
+                  return null
+                }
+                return { source, target }
+              })
+              .filter((edge) => edge !== null)
+            : []
+
+          const hadNodes = graphNodes.value.length > 0
+          graphNodes.value = nextNodes
+          graphEdges.value = nextEdges
+          rebuildGraphLayout()
+
+          if (!hadNodes && nextNodes.length > 0) {
+            hasMovedCamera.value = false
+          }
+
+          fitCameraToGraph(false)
+          drawGraph()
+        }
+
+        async function refreshGraph() {
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            applyGraphPayload({
+              nodes: [],
+              edges: [],
+            })
+            return
+          }
+
+          if (graphRefreshInFlight) {
+            graphRefreshQueued = true
+            return
+          }
+
+          graphRefreshInFlight = true
+          let rawResult = null
+          try {
+            rawResult = await instance.runPythonAsync(GRAPH_SNAPSHOT_SOURCE)
+            const payloadText = typeof rawResult === 'string' ? rawResult : String(rawResult)
+            const payload = JSON.parse(payloadText)
+            applyGraphPayload(payload)
+          } catch (error) {
+            console.error(error)
+          } finally {
+            destroyPyProxy(rawResult)
+            graphRefreshInFlight = false
+            if (graphRefreshQueued) {
+              graphRefreshQueued = false
+              void refreshGraph()
+            }
+          }
+        }
+
+        function queueGraphRefresh(delayMs = 0) {
+          if (graphRefreshTimer !== null) {
+            return
+          }
+          graphRefreshTimer = window.setTimeout(() => {
+            graphRefreshTimer = null
+            void refreshGraph()
+          }, delayMs)
+        }
+
         function onPointerMove(event) {
           if (!resizing.value || window.innerWidth <= DESKTOP_BREAKPOINT) {
             return
@@ -157,6 +804,7 @@
 
           const { minLeft, maxLeft } = calculateBounds()
           leftPaneWidth.value = clamp(event.clientX - 12, minLeft, maxLeft)
+          drawGraph()
         }
 
         function stopResize() {
@@ -179,14 +827,15 @@
 
         function resetSplit() {
           leftPaneWidth.value = calculateDefaultSplit()
+          drawGraph()
         }
 
         function onWindowResize() {
-          if (window.innerWidth <= DESKTOP_BREAKPOINT) {
-            return
+          if (window.innerWidth > DESKTOP_BREAKPOINT) {
+            const { minLeft, maxLeft } = calculateBounds()
+            leftPaneWidth.value = clamp(leftPaneWidth.value, minLeft, maxLeft)
           }
-          const { minLeft, maxLeft } = calculateBounds()
-          leftPaneWidth.value = clamp(leftPaneWidth.value, minLeft, maxLeft)
+          drawGraph()
         }
 
         async function loadNotebook() {
@@ -205,6 +854,122 @@
           }
         }
 
+        function onCanvasPointerDown(event) {
+          if (event.button !== 0) {
+            return
+          }
+          isPanningCamera.value = true
+          lastPointerX = event.clientX
+          lastPointerY = event.clientY
+          if (event.currentTarget && typeof event.currentTarget.setPointerCapture === 'function') {
+            event.currentTarget.setPointerCapture(event.pointerId)
+          }
+        }
+
+        function onCanvasPointerMove(event) {
+          if (!isPanningCamera.value) {
+            return
+          }
+          const dx = event.clientX - lastPointerX
+          const dy = event.clientY - lastPointerY
+          lastPointerX = event.clientX
+          lastPointerY = event.clientY
+          cameraOffsetX.value += dx
+          cameraOffsetY.value += dy
+          hasMovedCamera.value = true
+          drawGraph()
+        }
+
+        function onCanvasPointerUp(event) {
+          if (!isPanningCamera.value) {
+            return
+          }
+          isPanningCamera.value = false
+          if (event.currentTarget && typeof event.currentTarget.releasePointerCapture === 'function') {
+            try {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            } catch {
+              // Ignore release errors when pointer capture has already ended.
+            }
+          }
+        }
+
+        function onCanvasWheel(event) {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return
+          }
+          const rect = canvas.getBoundingClientRect()
+          const localX = event.clientX - rect.left
+          const localY = event.clientY - rect.top
+          const worldX = (localX - cameraOffsetX.value) / cameraScale.value
+          const worldY = (localY - cameraOffsetY.value) / cameraScale.value
+
+          const scaleFactor = Math.exp(-event.deltaY * 0.0012)
+          const nextScale = clamp(cameraScale.value * scaleFactor, 0.15, 4.2)
+          if (nextScale === cameraScale.value) {
+            return
+          }
+
+          cameraScale.value = nextScale
+          cameraOffsetX.value = localX - worldX * nextScale
+          cameraOffsetY.value = localY - worldY * nextScale
+          hasMovedCamera.value = true
+          drawGraph()
+        }
+
+        function resetGraphCamera() {
+          hasMovedCamera.value = false
+          fitCameraToGraph(true)
+          drawGraph()
+        }
+
+        function onKernelReady(payload) {
+          pyodideRef.value = payload?.pyodide ?? null
+          queueGraphRefresh()
+        }
+
+        function onWorkspaceSync(payload) {
+          if (payload && payload.mode === 'always-live') {
+            queueGraphRefresh(80)
+          }
+        }
+
+        function onCellComplete() {
+          queueGraphRefresh()
+        }
+
+        const graphSummary = computed(() => {
+          const nodeCount = graphNodes.value.length
+          const edgeCount = graphEdges.value.length
+          if (nodeCount === 0) {
+            return 'Run notebook cells to populate the graph.'
+          }
+          return `${nodeCount} nodes \u00b7 ${edgeCount} edges`
+        })
+
+        const graphRoots = computed(() => {
+          const names = []
+          for (const node of graphNodes.value) {
+            if (!Array.isArray(node.roots) || node.roots.length === 0) {
+              continue
+            }
+            for (const root of node.roots) {
+              if (!names.includes(root)) {
+                names.push(root)
+              }
+            }
+          }
+          if (names.length === 0) {
+            return ''
+          }
+          const preview = names.slice(0, 4).join(', ')
+          if (names.length > 4) {
+            return `roots: ${preview}, +${names.length - 4} more`
+          }
+          return `roots: ${preview}`
+        })
+
         const pageStyle = computed(() => ({
           '--left-pane-width': `${leftPaneWidth.value}px`,
         }))
@@ -215,11 +980,16 @@
           }
           window.addEventListener('resize', onWindowResize)
           void loadNotebook()
+          resetGraphCamera()
         })
 
         onBeforeUnmount(() => {
           stopResize()
           window.removeEventListener('resize', onWindowResize)
+          if (graphRefreshTimer !== null) {
+            clearTimeout(graphRefreshTimer)
+            graphRefreshTimer = null
+          }
         })
 
         return {
@@ -228,12 +998,42 @@
           pageStyle,
           startResize,
           resetSplit,
+          viewerCanvasRef,
+          isPanningCamera,
+          onCanvasPointerDown,
+          onCanvasPointerMove,
+          onCanvasPointerUp,
+          onCanvasWheel,
+          resetGraphCamera,
+          onKernelReady,
+          onWorkspaceSync,
+          onCellComplete,
+          graphSummary,
+          graphRoots,
         }
       },
       template: `
           <main class="page" :style="pageStyle">
             <section class="left-pane">
-              <section class="left-pane-card" aria-label="NN visualizer"></section>
+              <section class="left-pane-card" aria-label="Computational graph">
+                <canvas
+                  ref="viewerCanvasRef"
+                  class="graph-canvas"
+                  :class="{ 'is-panning': isPanningCamera }"
+                  @wheel.prevent="onCanvasWheel"
+                  @pointerdown="onCanvasPointerDown"
+                  @pointermove="onCanvasPointerMove"
+                  @pointerup="onCanvasPointerUp"
+                  @pointercancel="onCanvasPointerUp"
+                  @pointerleave="onCanvasPointerUp"
+                  @dblclick="resetGraphCamera"
+                />
+                <div class="graph-overlay" aria-live="polite">
+                  <p class="graph-title">Computational Graph</p>
+                  <p class="graph-meta">{{ graphSummary }}</p>
+                  <p v-if="graphRoots" class="graph-meta">{{ graphRoots }}</p>
+                </div>
+              </section>
             </section>
 
             <div
@@ -252,6 +1052,9 @@
                 :autosave-interval="1000"
                 :pyodide-packages="['numpy']"
                 :theme="editorTheme"
+                @ready="onKernelReady"
+                @workspace:sync="onWorkspaceSync"
+                @cell:complete="onCellComplete"
               />
             </section>
           </main>

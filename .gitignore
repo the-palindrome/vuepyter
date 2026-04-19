@@ -1,6 +1,8 @@
 tmp/
 .devcontainer/
 node_modules/
+.venv/
+venv/
 dist/
 coverage/
 playwright-report/

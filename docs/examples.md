@@ -20,6 +20,7 @@ npm run example
 - `http://localhost:5173/examples/quickstart/quickstart.html`
 - `http://localhost:5173/examples/game-of-life/game-of-life.html`
 - `http://localhost:5173/examples/nn-visualizer/nn-visualizer.html`
+- `http://localhost:5173/examples/graph-theory/graph-theory.html`
 - `http://localhost:5173/examples/cart-pole/cart-pole.html`
 
 ## How the Examples Are Structured
@@ -101,6 +102,20 @@ The nn-visualizer example lives in [`examples/nn-visualizer/nn-visualizer.html`]
 
 This example is the cleanest starting point when you want the Game of Life layout but do not want any inherited simulation code or notebook content. You can drop in your own viewer on the left and build up notebook cells on the right from scratch.
 
+## Graph Theory Example
+
+The graph-theory example lives in [`examples/graph-theory/graph-theory.html`](../examples/graph-theory/graph-theory.html) and loads [`examples/graph-theory/graph-theory.ipynb`](../examples/graph-theory/graph-theory.ipynb). It keeps the same resizable split-pane shell as the other examples, but starts with an intentionally blank left pane and an empty notebook.
+
+### What It Demonstrates
+
+- Starting from a clean two-pane scaffold without inherited visualization logic.
+- Loading an empty notebook document with valid Jupyter metadata.
+- Reserving the left pane as an empty canvas area for future graph rendering work.
+
+### Why It Matters
+
+This example is useful when you want to prototype graph algorithms or network visualizations without removing starter content first. You can build both the notebook cells and the left-side renderer from a fully blank state.
+
 ## Cart-Pole Example
 
 The Cart-Pole example lives in [`examples/cart-pole/cart-pole.html`](../examples/cart-pole/cart-pole.html) and loads [`examples/cart-pole/cart-pole.ipynb`](../examples/cart-pole/cart-pole.ipynb). It presents a real-time inverted-pendulum simulation beside the notebook editor.
@@ -128,6 +143,7 @@ Pick the example that matches the shape of the app you want to build:
 - Start with `quickstart` when you need a standard notebook editor with `v-model`.
 - Start with `game-of-life` when you need a notebook to feed state into a custom visualization.
 - Start with `nn-visualizer` when you want a blank split-pane visualization starter.
+- Start with `graph-theory` when you want a completely blank split-pane scaffold for graph work.
 - Start with `cart-pole` when you need an interactive application loop that both reads from and writes to the Python runtime.
 
 If you are new to the codebase, read the quickstart example first even if you eventually want one of the interactive demos. It has the smallest surface area and makes the `v-model` data flow easiest to follow.

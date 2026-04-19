@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vuepyter Graph Theory Example</title>
+  <link rel="stylesheet" href="../../vuepyter/dist/vuepyter.css" />
+  <style>
+    :root {
+      --app-gap: 0.75rem;
+      --app-pad: 0.75rem;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      color: #111827;
+    }
+
+    #app {
+      height: 100%;
+    }
+
+    .page {
+      height: 100vh;
+      display: grid;
+      grid-template-columns: var(--left-pane-width, calc(50vw - 18px)) 10px minmax(0, 1fr);
+      gap: var(--app-gap);
+      padding: var(--app-pad);
+      box-sizing: border-box;
+    }
+
+    .left-pane,
+    .right-pane {
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .editor-fill {
+      height: 100%;
+    }
+
+    .splitter {
+      position: relative;
+      border-radius: 999px;
+      background: #d1d5db;
+      cursor: col-resize;
+      touch-action: none;
+    }
+
+    .splitter::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 2px;
+      height: 40px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: #9ca3af;
+    }
+
+    .left-pane-card {
+      position: relative;
+      height: 100%;
+      min-height: 0;
+      box-sizing: border-box;
+      overflow: hidden;
+      border-radius: 0.7rem;
+      background: #271828;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.28);
+    }
+
+    .graph-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      touch-action: none;
+      cursor: grab;
+      background: #271828;
+    }
+
+    .graph-canvas.is-panning {
+      cursor: grabbing;
+    }
+
+    .graph-overlay {
+      position: absolute;
+      top: 0.85rem;
+      left: 0.85rem;
+      pointer-events: none;
+      border-radius: 0.55rem;
+      background: rgba(0, 0, 0, 0.36);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 0.4rem 0.55rem;
+      backdrop-filter: blur(6px);
+      color: #e2e8f0;
+      font-size: 0.68rem;
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    body.is-resizing,
+    body.is-resizing * {
+      user-select: none;
+      cursor: col-resize !important;
+    }
+
+    @media (max-width: 960px) {
+      .page {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+
+      .splitter {
+        display: none;
+      }
+
+      .left-pane {
+        display: block;
+        height: 360px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    import { createApp, ref, computed, onBeforeUnmount, onMounted } from 'vue'
+    import { Vuepyter } from '/vuepyter/dist/index.mjs'
+
+    const NOTEBOOK_URL = './graph-theory.ipynb'
+    const DESKTOP_BREAKPOINT = 960
+
+    const GRAPH_SNAPSHOT_SOURCE = `
+import json
+
+
+def __vuepyter_is_graph_like__(value):
+    if value is None or isinstance(value, type):
+        return False
+    try:
+        nodes = getattr(value, "nodes")
+        edges = getattr(value, "edges")
+    except Exception:
+        return False
+
+    try:
+        iter(nodes)
+        iter(edges)
+    except Exception:
+        return False
+
+    return True
+
+
+def __vuepyter_iter_items__(value, limit=512):
+    if value is None:
+        return []
+
+    if isinstance(value, dict):
+        source = value.values()
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        source = value
+    else:
+        try:
+            source = value
+            iter(source)
+        except Exception:
+            return []
+
+    out = []
+    for index, item in enumerate(source):
+        if index >= limit:
+            break
+        out.append(item)
+    return out
+
+
+def __vuepyter_walk_for_graphs__(value, path, depth, seen, out):
+    if depth < 0:
+        return
+
+    key = id(value)
+    if key in seen:
+        return
+    seen.add(key)
+
+    if __vuepyter_is_graph_like__(value):
+        out.append((path, value))
+        return
+
+    if isinstance(value, dict):
+        for index, (item_key, item_value) in enumerate(list(value.items())[:64]):
+            child_path = f"{path}.{item_key}" if path else str(item_key)
+            __vuepyter_walk_for_graphs__(item_value, child_path, depth - 1, seen, out)
+            if index >= 63:
+                break
+        return
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for index, item in enumerate(list(value)[:64]):
+            child_path = f"{path}[{index}]"
+            __vuepyter_walk_for_graphs__(item, child_path, depth - 1, seen, out)
+        return
+
+
+def __vuepyter_parse_metadata__(raw):
+    metadata = getattr(raw, "metadata", None)
+    color = getattr(metadata, "color", None)
+    size = getattr(metadata, "size", None)
+
+    if color is not None:
+        try:
+            color = str(color).strip()
+        except Exception:
+            color = None
+        if not color:
+            color = None
+
+    if size is not None:
+        try:
+            size = float(size)
+        except Exception:
+            size = None
+
+    return color, size
+
+
+def __vuepyter_edge_endpoints__(raw_edge):
+    for left_name, right_name in (
+        ("frm", "to"),
+        ("from_node", "to_node"),
+        ("source", "target"),
+        ("u", "v"),
+        ("start", "end"),
+    ):
+        try:
+            left = getattr(raw_edge, left_name)
+            right = getattr(raw_edge, right_name)
+            return left, right
+        except Exception:
+            pass
+
+    try:
+        left = getattr(raw_edge, "from")
+        right = getattr(raw_edge, "to")
+        return left, right
+    except Exception:
+        pass
+
+    if isinstance(raw_edge, (list, tuple)) and len(raw_edge) >= 2:
+        return raw_edge[0], raw_edge[1]
+
+    return None, None
+
+
+def __vuepyter_graph_to_payload__(graph_name, graph_obj):
+    raw_nodes = __vuepyter_iter_items__(getattr(graph_obj, "nodes", []), limit=512)
+    raw_edges = __vuepyter_iter_items__(getattr(graph_obj, "edges", []), limit=1024)
+
+    nodes = []
+    edges = []
+
+    node_ids_by_object = {}
+    node_ids_by_label = {}
+
+    def ensure_node(raw):
+        if raw is None:
+            return None
+
+        object_id = None
+        label = None
+
+        if hasattr(raw, "label"):
+            try:
+                object_id = id(raw)
+            except Exception:
+                object_id = None
+            try:
+                label = str(getattr(raw, "label"))
+            except Exception:
+                label = str(raw)
+        else:
+            label = str(raw)
+
+        if object_id is not None and object_id in node_ids_by_object:
+            return node_ids_by_object[object_id]
+
+        if label in node_ids_by_label:
+            existing_id = node_ids_by_label[label]
+            if object_id is not None:
+                node_ids_by_object[object_id] = existing_id
+            return existing_id
+
+        color, size = __vuepyter_parse_metadata__(raw)
+
+        node_id = f"n{len(nodes)}"
+        node_payload = {
+            "id": node_id,
+            "label": label,
+        }
+
+        if color is not None:
+            node_payload["color"] = color
+        if size is not None:
+            node_payload["size"] = size
+
+        nodes.append(node_payload)
+
+        if object_id is not None:
+            node_ids_by_object[object_id] = node_id
+        node_ids_by_label[label] = node_id
+
+        return node_id
+
+    for raw_node in raw_nodes:
+        ensure_node(raw_node)
+
+    for raw_edge in raw_edges:
+        left, right = __vuepyter_edge_endpoints__(raw_edge)
+        source_id = ensure_node(left)
+        target_id = ensure_node(right)
+        if source_id is None or target_id is None:
+            continue
+        edges.append({
+            "source": source_id,
+            "target": target_id,
+        })
+
+    return {
+        "name": graph_name,
+        "directed": bool(getattr(graph_obj, "directed", False)),
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+graph_payloads = []
+seen_graph_ids = set()
+
+for global_name, global_value in list(globals().items()):
+    if global_name.startswith("_"):
+        continue
+    if callable(global_value) or isinstance(global_value, type):
+        continue
+
+    discovered = []
+    __vuepyter_walk_for_graphs__(global_value, global_name, depth=2, seen=set(), out=discovered)
+
+    for path, graph_obj in discovered:
+        graph_id = id(graph_obj)
+        if graph_id in seen_graph_ids:
+            continue
+        seen_graph_ids.add(graph_id)
+        graph_payloads.append(__vuepyter_graph_to_payload__(path, graph_obj))
+
+payload = {
+    "ok": True,
+    "graphs": graph_payloads,
+}
+
+json.dumps(payload)
+    `.trim()
+
+    const app = createApp({
+      components: {
+        Vuepyter,
+      },
+      setup() {
+        const notebook = ref({
+          nbformat: 4,
+          nbformat_minor: 5,
+          metadata: {},
+          cells: [],
+        })
+
+        const editorTheme = {
+          '--vuepyter-bg': '#ffffff',
+          '--vuepyter-cell-bg': '#ffffff',
+        }
+
+        const leftPaneWidth = ref(
+          typeof window === 'undefined' ? 380 : Math.floor((window.innerWidth - 2 * 12) / 2),
+        )
+        const resizing = ref(false)
+        const pyodideRef = ref(null)
+        const notebookLoaded = ref(false)
+        const kernelReady = ref(false)
+        const hasAutoExecutedFirstCell = ref(false)
+        const autoExecutingFirstCell = ref(false)
+        const viewerCanvasRef = ref(null)
+        const graphGallery = ref([])
+        const isPanningCamera = ref(false)
+        const hasMovedCamera = ref(false)
+        const cameraScale = ref(1)
+        const cameraOffsetX = ref(0)
+        const cameraOffsetY = ref(0)
+
+        let lastPointerX = 0
+        let lastPointerY = 0
+        let refreshInFlight = false
+        let refreshQueued = false
+        let refreshTimer = null
+
+        let worldBounds = {
+          minX: -240,
+          maxX: 240,
+          minY: -160,
+          maxY: 160,
+        }
+
+        function clamp(value, min, max) {
+          return Math.min(max, Math.max(min, value))
+        }
+
+        function hashString(value) {
+          const text = String(value)
+          let hash = 2166136261
+          for (let index = 0; index < text.length; index += 1) {
+            hash ^= text.charCodeAt(index)
+            hash +=
+              (hash << 1)
+              + (hash << 4)
+              + (hash << 7)
+              + (hash << 8)
+              + (hash << 24)
+          }
+          return hash >>> 0
+        }
+
+        function calculateBounds() {
+          const totalWidth = window.innerWidth - 2 * 12
+          const minLeft = 280
+          const minRight = 420
+          const maxLeft = Math.max(minLeft, totalWidth - minRight)
+          return { minLeft, maxLeft }
+        }
+
+        function calculateDefaultSplit() {
+          if (window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return leftPaneWidth.value
+          }
+          const { minLeft, maxLeft } = calculateBounds()
+          const totalWidth = window.innerWidth - 2 * 12
+          return clamp(totalWidth / 2, minLeft, maxLeft)
+        }
+
+        function destroyPyProxy(value) {
+          if (value && typeof value === 'object' && typeof value.destroy === 'function') {
+            try {
+              value.destroy()
+            } catch {
+              // Ignore proxy cleanup errors.
+            }
+          }
+        }
+
+        function getCanvasMetrics() {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return null
+          }
+          const rect = canvas.getBoundingClientRect()
+          const width = Math.max(1, rect.width)
+          const height = Math.max(1, rect.height)
+          const dpr = window.devicePixelRatio || 1
+          const pixelWidth = Math.max(1, Math.floor(width * dpr))
+          const pixelHeight = Math.max(1, Math.floor(height * dpr))
+          if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+            canvas.width = pixelWidth
+            canvas.height = pixelHeight
+          }
+          const ctx = canvas.getContext('2d')
+          if (!ctx) {
+            return null
+          }
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+          return { ctx, width, height }
+        }
+
+        function normalizeGraphPayload(payload) {
+          if (!payload || typeof payload !== 'object' || !Array.isArray(payload.graphs)) {
+            return []
+          }
+
+          const output = []
+
+          for (const rawGraph of payload.graphs) {
+            if (!rawGraph || typeof rawGraph !== 'object') {
+              continue
+            }
+
+            const rawNodes = Array.isArray(rawGraph.nodes) ? rawGraph.nodes : []
+            const rawEdges = Array.isArray(rawGraph.edges) ? rawGraph.edges : []
+            const nodes = []
+            const nodeIds = new Set()
+
+            for (const rawNode of rawNodes) {
+              if (!rawNode || typeof rawNode !== 'object') {
+                continue
+              }
+              const id = rawNode.id == null ? '' : String(rawNode.id)
+              if (!id || nodeIds.has(id)) {
+                continue
+              }
+              const label = rawNode.label == null ? id : String(rawNode.label)
+              const color = rawNode.color == null ? null : String(rawNode.color)
+              const sizeNumber = Number(rawNode.size)
+              nodes.push({
+                id,
+                label,
+                color,
+                size: Number.isFinite(sizeNumber) ? sizeNumber : null,
+              })
+              nodeIds.add(id)
+            }
+
+            const edges = []
+            for (const rawEdge of rawEdges) {
+              if (!rawEdge || typeof rawEdge !== 'object') {
+                continue
+              }
+              const source = rawEdge.source == null ? '' : String(rawEdge.source)
+              const target = rawEdge.target == null ? '' : String(rawEdge.target)
+              if (!source || !target || !nodeIds.has(source) || !nodeIds.has(target)) {
+                continue
+              }
+              edges.push({ source, target })
+            }
+
+            output.push({
+              name: typeof rawGraph.name === 'string' && rawGraph.name ? rawGraph.name : 'graph',
+              directed: !!rawGraph.directed,
+              nodes,
+              edges,
+            })
+          }
+
+          output.sort((a, b) => a.name.localeCompare(b.name))
+          return output
+        }
+
+        function nodeRadius(node) {
+          if (Number.isFinite(node.size)) {
+            return clamp(8 + node.size * 1.2, 9, 24)
+          }
+          return 14
+        }
+
+        function nodeColor(node) {
+          const fallback = '#10b981'
+          if (typeof node.color !== 'string' || !node.color.trim()) {
+            return fallback
+          }
+          const candidate = node.color.trim()
+
+          if (typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('color', candidate)) {
+            return candidate
+          }
+
+          const named = {
+            green: '#10b981',
+            teal: '#14b8a6',
+            cyan: '#22d3ee',
+            yellow: '#e9c84b',
+            amber: '#f59e0b',
+            orange: '#fb923c',
+            red: '#ef4444',
+            blue: '#3b82f6',
+            purple: '#a855f7',
+            pink: '#ec4899',
+            white: '#f8fafc',
+            gray: '#94a3b8',
+            grey: '#94a3b8',
+          }
+          const key = candidate.toLowerCase()
+          return named[key] || fallback
+        }
+
+        function layoutSingleGraph(graph) {
+          const nodes = graph.nodes
+          const edges = graph.edges
+          const total = nodes.length
+
+          if (total === 0) {
+            return {
+              nodes: [],
+              edges: [],
+              bounds: {
+                minX: -120,
+                maxX: 120,
+                minY: -80,
+                maxY: 80,
+              },
+            }
+          }
+
+          const positions = nodes.map((node, index) => {
+            const angle = (Math.PI * 2 * index) / Math.max(1, total)
+            const jitter = ((hashString(node.id) % 1000) / 1000 - 0.5) * 14
+            const radius = Math.max(120, total * 24)
+            return {
+              x: Math.cos(angle) * radius + jitter,
+              y: Math.sin(angle) * radius - jitter,
+              radius: nodeRadius(node),
+              color: nodeColor(node),
+            }
+          })
+
+          const indexById = new Map(nodes.map((node, index) => [node.id, index]))
+
+          if (total <= 84 && edges.length > 0) {
+            const springLength = clamp(180 / Math.sqrt(total), 48, 110)
+            let temperature = Math.max(18, springLength * 0.36)
+
+            for (let iteration = 0; iteration < 220; iteration += 1) {
+              const forceX = new Array(total).fill(0)
+              const forceY = new Array(total).fill(0)
+
+              for (let i = 0; i < total; i += 1) {
+                for (let j = i + 1; j < total; j += 1) {
+                  const dx = positions[i].x - positions[j].x
+                  const dy = positions[i].y - positions[j].y
+                  const distance = Math.hypot(dx, dy) + 0.01
+                  const repulsion = (springLength * springLength) / distance
+                  const ux = dx / distance
+                  const uy = dy / distance
+                  forceX[i] += ux * repulsion
+                  forceY[i] += uy * repulsion
+                  forceX[j] -= ux * repulsion
+                  forceY[j] -= uy * repulsion
+                }
+              }
+
+              for (const edge of edges) {
+                const sourceIndex = indexById.get(edge.source)
+                const targetIndex = indexById.get(edge.target)
+                if (sourceIndex == null || targetIndex == null || sourceIndex === targetIndex) {
+                  continue
+                }
+
+                const dx = positions[sourceIndex].x - positions[targetIndex].x
+                const dy = positions[sourceIndex].y - positions[targetIndex].y
+                const distance = Math.hypot(dx, dy) + 0.01
+                const attraction = (distance * distance) / (springLength * 1.2)
+                const ux = dx / distance
+                const uy = dy / distance
+
+                forceX[sourceIndex] -= ux * attraction
+                forceY[sourceIndex] -= uy * attraction
+                forceX[targetIndex] += ux * attraction
+                forceY[targetIndex] += uy * attraction
+              }
+
+              for (let index = 0; index < total; index += 1) {
+                const dx = forceX[index]
+                const dy = forceY[index]
+                const distance = Math.hypot(dx, dy)
+                if (distance < 0.0001) {
+                  continue
+                }
+                const step = Math.min(temperature, distance)
+                positions[index].x += (dx / distance) * step
+                positions[index].y += (dy / distance) * step
+              }
+
+              temperature *= 0.968
+            }
+          }
+
+          let minX = Number.POSITIVE_INFINITY
+          let maxX = Number.NEGATIVE_INFINITY
+          let minY = Number.POSITIVE_INFINITY
+          let maxY = Number.NEGATIVE_INFINITY
+
+          for (const point of positions) {
+            minX = Math.min(minX, point.x - point.radius - 8)
+            maxX = Math.max(maxX, point.x + point.radius + 54)
+            minY = Math.min(minY, point.y - point.radius - 38)
+            maxY = Math.max(maxY, point.y + point.radius + 14)
+          }
+
+          const nodeViews = nodes.map((node, index) => ({
+            id: node.id,
+            label: node.label,
+            x: positions[index].x,
+            y: positions[index].y,
+            radius: positions[index].radius,
+            color: positions[index].color,
+          }))
+
+          return {
+            nodes: nodeViews,
+            edges,
+            bounds: { minX, maxX, minY, maxY },
+          }
+        }
+
+        function rebuildWorldLayout() {
+          const graphs = graphGallery.value
+          if (!Array.isArray(graphs) || graphs.length === 0) {
+            worldBounds = {
+              minX: -240,
+              maxX: 240,
+              minY: -160,
+              maxY: 160,
+            }
+            return
+          }
+
+          const maxColumns = graphs.length > 1 ? 2 : 1
+          let cursorX = 0
+          let cursorY = 0
+          let rowHeight = 0
+          let columnIndex = 0
+
+          let minX = Number.POSITIVE_INFINITY
+          let maxX = Number.NEGATIVE_INFINITY
+          let minY = Number.POSITIVE_INFINITY
+          let maxY = Number.NEGATIVE_INFINITY
+
+          for (const graph of graphs) {
+            const local = layoutSingleGraph(graph)
+            const width = Math.max(220, local.bounds.maxX - local.bounds.minX + 68)
+            const height = Math.max(190, local.bounds.maxY - local.bounds.minY + 70)
+
+            if (columnIndex >= maxColumns) {
+              columnIndex = 0
+              cursorX = 0
+              cursorY += rowHeight + 180
+              rowHeight = 0
+            }
+
+            const offsetX = cursorX - local.bounds.minX + 34
+            const offsetY = cursorY - local.bounds.minY + 44
+
+            const worldNodes = local.nodes.map((node) => ({
+              ...node,
+              x: node.x + offsetX,
+              y: node.y + offsetY,
+            }))
+
+            const pointById = new Map(worldNodes.map((node) => [node.id, node]))
+            const worldEdges = local.edges
+              .map((edge) => {
+                const source = pointById.get(edge.source)
+                const target = pointById.get(edge.target)
+                if (!source || !target) {
+                  return null
+                }
+                return { source, target }
+              })
+              .filter((edge) => edge !== null)
+
+            graph.render = {
+              title: graph.name,
+              directed: graph.directed,
+              titleX: (local.bounds.minX + local.bounds.maxX) / 2 + offsetX,
+              titleY: local.bounds.minY + offsetY - 18,
+              nodes: worldNodes,
+              edges: worldEdges,
+            }
+
+            for (const node of worldNodes) {
+              minX = Math.min(minX, node.x - node.radius - 12)
+              maxX = Math.max(maxX, node.x + node.radius + 66)
+              minY = Math.min(minY, node.y - node.radius - 48)
+              maxY = Math.max(maxY, node.y + node.radius + 18)
+            }
+
+            cursorX += width + 190
+            rowHeight = Math.max(rowHeight, height)
+            columnIndex += 1
+          }
+
+          worldBounds = {
+            minX,
+            maxX,
+            minY,
+            maxY,
+          }
+        }
+
+        function fitCameraToWorld(force = false) {
+          if (!force && hasMovedCamera.value) {
+            return
+          }
+
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { width, height } = metrics
+          const worldWidth = Math.max(1, worldBounds.maxX - worldBounds.minX)
+          const worldHeight = Math.max(1, worldBounds.maxY - worldBounds.minY)
+
+          const targetScale = clamp(
+            Math.min((width - 72) / worldWidth, (height - 72) / worldHeight),
+            0.14,
+            3.2,
+          )
+
+          const centerX = (worldBounds.minX + worldBounds.maxX) / 2
+          const centerY = (worldBounds.minY + worldBounds.maxY) / 2
+
+          cameraScale.value = targetScale
+          cameraOffsetX.value = width / 2 - centerX * targetScale
+          cameraOffsetY.value = height / 2 - centerY * targetScale
+        }
+
+        function drawArrowhead(ctx, source, target, size) {
+          const dx = target.x - source.x
+          const dy = target.y - source.y
+          const dist = Math.hypot(dx, dy)
+          if (dist < 1) {
+            return
+          }
+
+          const ux = dx / dist
+          const uy = dy / dist
+          const tipX = target.x - ux * (target.radius + 2)
+          const tipY = target.y - uy * (target.radius + 2)
+          const wingX = -uy
+          const wingY = ux
+
+          ctx.beginPath()
+          ctx.moveTo(tipX, tipY)
+          ctx.lineTo(tipX - ux * size + wingX * size * 0.58, tipY - uy * size + wingY * size * 0.58)
+          ctx.lineTo(tipX - ux * size - wingX * size * 0.58, tipY - uy * size - wingY * size * 0.58)
+          ctx.closePath()
+          ctx.fill()
+        }
+
+        function drawGallery() {
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { ctx, width, height } = metrics
+
+          ctx.clearRect(0, 0, width, height)
+
+          ctx.fillStyle = '#271828'
+          ctx.fillRect(0, 0, width, height)
+
+          const graphs = graphGallery.value
+          if (!Array.isArray(graphs) || graphs.length === 0) {
+            return
+          }
+
+          ctx.save()
+          ctx.translate(cameraOffsetX.value, cameraOffsetY.value)
+          ctx.scale(cameraScale.value, cameraScale.value)
+
+          ctx.lineCap = 'round'
+          ctx.lineJoin = 'round'
+
+          for (const graph of graphs) {
+            if (!graph.render) {
+              continue
+            }
+
+            ctx.strokeStyle = 'rgba(250, 250, 252, 0.95)'
+            ctx.lineWidth = 5.8 / cameraScale.value
+
+            ctx.beginPath()
+            for (const edge of graph.render.edges) {
+              ctx.moveTo(edge.source.x, edge.source.y)
+              ctx.lineTo(edge.target.x, edge.target.y)
+            }
+            ctx.stroke()
+
+            if (graph.render.directed) {
+              ctx.fillStyle = 'rgba(250, 250, 252, 0.95)'
+              for (const edge of graph.render.edges) {
+                drawArrowhead(ctx, edge.source, edge.target, 13 / cameraScale.value)
+              }
+            }
+
+            for (const node of graph.render.nodes) {
+              ctx.save()
+              ctx.shadowColor = `${node.color}99`
+              ctx.shadowBlur = 18 / cameraScale.value
+              ctx.fillStyle = node.color
+              ctx.beginPath()
+              ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2)
+              ctx.fill()
+              ctx.restore()
+            }
+
+            ctx.fillStyle = 'rgba(250, 250, 252, 0.98)'
+            ctx.textAlign = 'left'
+            ctx.textBaseline = 'middle'
+            ctx.font = `italic ${34 / cameraScale.value}px "Times New Roman", Georgia, serif`
+            for (const node of graph.render.nodes) {
+              ctx.fillText(node.label, node.x + node.radius + 8, node.y - node.radius * 0.95)
+            }
+
+            ctx.fillStyle = 'rgba(238, 241, 246, 0.9)'
+            ctx.textAlign = 'center'
+            ctx.textBaseline = 'middle'
+            ctx.font = `italic ${26 / cameraScale.value}px "Times New Roman", Georgia, serif`
+            ctx.fillText(graph.render.title, graph.render.titleX, graph.render.titleY)
+          }
+
+          ctx.restore()
+        }
+
+        function applySnapshot(payload) {
+          const previousCount = graphGallery.value.length
+          graphGallery.value = normalizeGraphPayload(payload)
+          rebuildWorldLayout()
+
+          if (previousCount === 0 && graphGallery.value.length > 0) {
+            hasMovedCamera.value = false
+          }
+
+          fitCameraToWorld(false)
+          drawGallery()
+        }
+
+        async function refreshGraphs() {
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            applySnapshot({ graphs: [] })
+            return
+          }
+
+          if (refreshInFlight) {
+            refreshQueued = true
+            return
+          }
+
+          refreshInFlight = true
+          let rawResult = null
+
+          try {
+            rawResult = await instance.runPythonAsync(GRAPH_SNAPSHOT_SOURCE)
+            const text = typeof rawResult === 'string' ? rawResult : String(rawResult)
+            const payload = JSON.parse(text)
+            applySnapshot(payload)
+          } catch (error) {
+            console.error(error)
+          } finally {
+            destroyPyProxy(rawResult)
+            refreshInFlight = false
+            if (refreshQueued) {
+              refreshQueued = false
+              void refreshGraphs()
+            }
+          }
+        }
+
+        function queueGraphRefresh(delayMs = 0) {
+          if (refreshTimer !== null) {
+            return
+          }
+          refreshTimer = window.setTimeout(() => {
+            refreshTimer = null
+            void refreshGraphs()
+          }, delayMs)
+        }
+
+        function onPointerMove(event) {
+          if (!resizing.value || window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return
+          }
+
+          const { minLeft, maxLeft } = calculateBounds()
+          leftPaneWidth.value = clamp(event.clientX - 12, minLeft, maxLeft)
+          drawGallery()
+        }
+
+        function stopResize() {
+          resizing.value = false
+          document.body.classList.remove('is-resizing')
+          window.removeEventListener('pointermove', onPointerMove)
+          window.removeEventListener('pointerup', stopResize)
+        }
+
+        function startResize(event) {
+          if (window.innerWidth <= DESKTOP_BREAKPOINT) {
+            return
+          }
+          event.preventDefault()
+          resizing.value = true
+          document.body.classList.add('is-resizing')
+          window.addEventListener('pointermove', onPointerMove)
+          window.addEventListener('pointerup', stopResize)
+        }
+
+        function resetSplit() {
+          leftPaneWidth.value = calculateDefaultSplit()
+          drawGallery()
+        }
+
+        function onWindowResize() {
+          if (window.innerWidth > DESKTOP_BREAKPOINT) {
+            const { minLeft, maxLeft } = calculateBounds()
+            leftPaneWidth.value = clamp(leftPaneWidth.value, minLeft, maxLeft)
+          }
+          drawGallery()
+          fitCameraToWorld(false)
+          drawGallery()
+        }
+
+        async function loadNotebook() {
+          try {
+            const response = await fetch(NOTEBOOK_URL, { cache: 'no-store' })
+            if (!response.ok) {
+              throw new Error(`Failed to load ${NOTEBOOK_URL}: ${response.status}`)
+            }
+            const data = await response.json()
+            if (!data || typeof data !== 'object' || !Array.isArray(data.cells)) {
+              throw new Error('Invalid notebook format')
+            }
+            notebook.value = data
+            notebookLoaded.value = true
+            void maybeAutoExecuteFirstCell()
+          } catch (error) {
+            console.error(error)
+          }
+        }
+
+        function getCellSource(cell) {
+          if (!cell || typeof cell !== 'object') {
+            return ''
+          }
+          const source = cell.source
+          if (Array.isArray(source)) {
+            return source.join('')
+          }
+          if (typeof source === 'string') {
+            return source
+          }
+          return ''
+        }
+
+        async function maybeAutoExecuteFirstCell() {
+          if (hasAutoExecutedFirstCell.value || autoExecutingFirstCell.value) {
+            return
+          }
+          if (!kernelReady.value || !notebookLoaded.value) {
+            return
+          }
+
+          const firstCodeCell = Array.isArray(notebook.value?.cells)
+            ? notebook.value.cells.find((cell) => cell && cell.cell_type === 'code') ?? null
+            : null
+          const firstCellSource = getCellSource(firstCodeCell)
+
+          if (!firstCodeCell || !firstCellSource.trim()) {
+            hasAutoExecutedFirstCell.value = true
+            return
+          }
+
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            return
+          }
+
+          autoExecutingFirstCell.value = true
+          try {
+            await instance.runPythonAsync(firstCellSource)
+          } catch (error) {
+            console.error('Auto execute first cell failed', error)
+          } finally {
+            autoExecutingFirstCell.value = false
+            hasAutoExecutedFirstCell.value = true
+            queueGraphRefresh()
+          }
+        }
+
+        function onCanvasPointerDown(event) {
+          if (event.button !== 0) {
+            return
+          }
+          isPanningCamera.value = true
+          lastPointerX = event.clientX
+          lastPointerY = event.clientY
+          if (event.currentTarget && typeof event.currentTarget.setPointerCapture === 'function') {
+            event.currentTarget.setPointerCapture(event.pointerId)
+          }
+        }
+
+        function onCanvasPointerMove(event) {
+          if (!isPanningCamera.value) {
+            return
+          }
+          const dx = event.clientX - lastPointerX
+          const dy = event.clientY - lastPointerY
+          lastPointerX = event.clientX
+          lastPointerY = event.clientY
+          cameraOffsetX.value += dx
+          cameraOffsetY.value += dy
+          hasMovedCamera.value = true
+          drawGallery()
+        }
+
+        function onCanvasPointerUp(event) {
+          if (!isPanningCamera.value) {
+            return
+          }
+          isPanningCamera.value = false
+          if (event.currentTarget && typeof event.currentTarget.releasePointerCapture === 'function') {
+            try {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            } catch {
+              // Ignore release errors when pointer capture has already ended.
+            }
+          }
+        }
+
+        function onCanvasWheel(event) {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return
+          }
+
+          const rect = canvas.getBoundingClientRect()
+          const localX = event.clientX - rect.left
+          const localY = event.clientY - rect.top
+          const worldX = (localX - cameraOffsetX.value) / cameraScale.value
+          const worldY = (localY - cameraOffsetY.value) / cameraScale.value
+
+          const factor = Math.exp(-event.deltaY * 0.0012)
+          const nextScale = clamp(cameraScale.value * factor, 0.1, 5)
+          if (nextScale === cameraScale.value) {
+            return
+          }
+
+          cameraScale.value = nextScale
+          cameraOffsetX.value = localX - worldX * nextScale
+          cameraOffsetY.value = localY - worldY * nextScale
+          hasMovedCamera.value = true
+          drawGallery()
+        }
+
+        function resetGraphCamera() {
+          hasMovedCamera.value = false
+          fitCameraToWorld(true)
+          drawGallery()
+        }
+
+        function onKernelReady(payload) {
+          pyodideRef.value = payload?.pyodide ?? null
+          kernelReady.value = true
+          void maybeAutoExecuteFirstCell()
+          queueGraphRefresh()
+        }
+
+        function onCellComplete() {
+          queueGraphRefresh()
+        }
+
+        function onWorkspaceSync(payload) {
+          if (payload && payload.mode === 'always-live') {
+            queueGraphRefresh(80)
+          }
+        }
+
+        const graphCountLabel = computed(() => {
+          const count = graphGallery.value.length
+          if (count === 1) {
+            return '1 graph detected'
+          }
+          return `${count} graphs detected`
+        })
+
+        const hasGraphs = computed(() => graphGallery.value.length > 0)
+
+        const pageStyle = computed(() => ({
+          '--left-pane-width': `${leftPaneWidth.value}px`,
+        }))
+
+        onMounted(() => {
+          if (window.innerWidth > DESKTOP_BREAKPOINT) {
+            leftPaneWidth.value = calculateDefaultSplit()
+          }
+          window.addEventListener('resize', onWindowResize)
+          void loadNotebook()
+          resetGraphCamera()
+        })
+
+        onBeforeUnmount(() => {
+          stopResize()
+          window.removeEventListener('resize', onWindowResize)
+          if (refreshTimer !== null) {
+            clearTimeout(refreshTimer)
+            refreshTimer = null
+          }
+        })
+
+        return {
+          notebook,
+          editorTheme,
+          pageStyle,
+          startResize,
+          resetSplit,
+          viewerCanvasRef,
+          isPanningCamera,
+          onCanvasPointerDown,
+          onCanvasPointerMove,
+          onCanvasPointerUp,
+          onCanvasWheel,
+          resetGraphCamera,
+          onKernelReady,
+          onCellComplete,
+          onWorkspaceSync,
+          graphCountLabel,
+          hasGraphs,
+        }
+      },
+      template: `
+          <main class="page" :style="pageStyle">
+            <section class="left-pane">
+              <section class="left-pane-card" aria-label="Graph visualizer">
+                <canvas
+                  ref="viewerCanvasRef"
+                  class="graph-canvas"
+                  :class="{ 'is-panning': isPanningCamera }"
+                  @wheel.prevent="onCanvasWheel"
+                  @pointerdown="onCanvasPointerDown"
+                  @pointermove="onCanvasPointerMove"
+                  @pointerup="onCanvasPointerUp"
+                  @pointercancel="onCanvasPointerUp"
+                  @pointerleave="onCanvasPointerUp"
+                  @dblclick="resetGraphCamera"
+                />
+                <div v-if="hasGraphs" class="graph-overlay" aria-live="polite">{{ graphCountLabel }}</div>
+              </section>
+            </section>
+
+            <div
+              class="splitter"
+              role="separator"
+              aria-label="Resize panes"
+              aria-orientation="vertical"
+              @pointerdown="startResize"
+              @dblclick="resetSplit"
+            />
+
+            <section class="right-pane">
+              <Vuepyter
+                class="editor-fill"
+                v-model="notebook"
+                :autosave-interval="1000"
+                :theme="editorTheme"
+                @ready="onKernelReady"
+                @workspace:sync="onWorkspaceSync"
+                @cell:complete="onCellComplete"
+              />
+            </section>
+          </main>
+        `,
+    })
+
+    app.mount('#app')
+  </script>
+</body>
+
+</html>
