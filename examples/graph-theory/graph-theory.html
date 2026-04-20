@@ -206,6 +206,7 @@
       }),
       sync: Object.freeze({
         graphRefreshWhileNotebookCameraMovingMs: 16,
+        animationPlaybackProbeFrames: 4,
         workspaceSyncRefreshMs: 80,
         notebookCameraSyncMs: 32,
         notebookCameraOverrideMs: 140,
@@ -841,6 +842,7 @@ json.dumps(payload, allow_nan=False)
         let nodePosSyncInFlight = false
         let notebookCameraOverrideUntil = 0
         let animationPlaybackWasActive = false
+        let animationPlaybackProbeFramesRemaining = 0
 
         let worldBounds = { ...VISUALIZER_CONSTANTS.viewport.defaultWorldBounds }
         let kernelTaskQueue = Promise.resolve()
@@ -851,15 +853,52 @@ json.dumps(payload, allow_nan=False)
 
         function createQueuedAsyncJob(executor) {
           let timer = null
+          let timerDeadline = 0
           let inFlight = false
           let queued = false
+          let queuedDelayMs = Number.POSITIVE_INFINITY
+
+          function normalizeDelay(delayMs = 0) {
+            const waitMs = Number(delayMs)
+            return Number.isFinite(waitMs) && waitMs > 0 ? waitMs : 0
+          }
+
+          function clearTimer() {
+            if (timer !== null) {
+              clearTimeout(timer)
+              timer = null
+              timerDeadline = 0
+            }
+          }
+
+          function schedule(delayMs = 0) {
+            if (!isComponentAlive) {
+              return
+            }
+            const normalizedDelay = normalizeDelay(delayMs)
+            const targetDeadline = Date.now() + normalizedDelay
+            if (timer !== null) {
+              if (targetDeadline >= timerDeadline) {
+                return
+              }
+              clearTimer()
+            }
+            timerDeadline = targetDeadline
+            timer = window.setTimeout(() => {
+              clearTimer()
+              void run()
+            }, normalizedDelay)
+          }
 
           async function run() {
             if (!isComponentAlive) {
               return
             }
+            // Cancel stale delayed runs; explicit run() should execute immediately.
+            clearTimer()
             if (inFlight) {
               queued = true
+              queuedDelayMs = Math.min(queuedDelayMs, 0)
               return
             }
 
@@ -872,42 +911,43 @@ json.dumps(payload, allow_nan=False)
               inFlight = false
               if (!isComponentAlive) {
                 queued = false
-                if (timer !== null) {
-                  clearTimeout(timer)
-                  timer = null
-                }
+                queuedDelayMs = Number.POSITIVE_INFINITY
+                clearTimer()
                 return
               }
 
-              const nextDelay = Number(outcome?.delayMs)
-              const followUpDelay = Number.isFinite(nextDelay) && nextDelay > 0 ? nextDelay : 0
+              const nextDelay = normalizeDelay(outcome?.delayMs)
               const shouldRerun = queued || outcome?.requeue === true
+              const requestedDelay = queuedDelayMs
               queued = false
+              queuedDelayMs = Number.POSITIVE_INFINITY
 
               if (shouldRerun) {
-                queue(followUpDelay)
+                const followUpDelay = Number.isFinite(requestedDelay)
+                  ? Math.min(requestedDelay, nextDelay)
+                  : nextDelay
+                schedule(followUpDelay)
               }
             }
           }
 
           function queue(delayMs = 0) {
-            if (!isComponentAlive || timer !== null) {
+            if (!isComponentAlive) {
               return
             }
-            const waitMs = Number(delayMs)
-            const normalizedDelay = Number.isFinite(waitMs) && waitMs > 0 ? waitMs : 0
-            timer = window.setTimeout(() => {
-              timer = null
-              void run()
-            }, normalizedDelay)
+            const normalizedDelay = normalizeDelay(delayMs)
+            if (inFlight) {
+              queued = true
+              queuedDelayMs = Math.min(queuedDelayMs, normalizedDelay)
+              return
+            }
+            schedule(normalizedDelay)
           }
 
           function cancel() {
             queued = false
-            if (timer !== null) {
-              clearTimeout(timer)
-              timer = null
-            }
+            queuedDelayMs = Number.POSITIVE_INFINITY
+            clearTimer()
           }
 
           return {
@@ -2553,6 +2593,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
 
             if (hasMovingAnimation) {
               animationPlaybackWasActive = true
+              animationPlaybackProbeFramesRemaining = 0
               return {
                 requeue: true,
                 delayMs: VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs,
@@ -2564,6 +2605,14 @@ json.dumps(__vuepyter_output__, allow_nan=False)
               // Refresh full snapshot once animation playback completes.
               queueGraphRefresh()
             }
+
+            if (animationPlaybackProbeFramesRemaining > 0) {
+              animationPlaybackProbeFramesRemaining -= 1
+              return {
+                requeue: true,
+                delayMs: VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs,
+              }
+            }
           } catch (error) {
             console.error('Failed to refresh animation playback', error)
           } finally {
@@ -2573,7 +2622,18 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           return null
         })
 
-        function queueAnimationPlayback(delayMs = VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs) {
+        function queueAnimationPlayback(
+          delayMs = VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs,
+          options = {},
+        ) {
+          const probeFramesRaw = Number(options?.probeFrames)
+          if (Number.isFinite(probeFramesRaw) && probeFramesRaw > 0) {
+            const probeFrames = Math.max(1, Math.floor(probeFramesRaw))
+            animationPlaybackProbeFramesRemaining = Math.max(
+              animationPlaybackProbeFramesRemaining,
+              probeFrames,
+            )
+          }
           const waitMs = Number(delayMs)
           if (Number.isFinite(waitMs) && waitMs <= 0) {
             void animationPlaybackJob.run()
@@ -3964,10 +4024,9 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             updateNodePositionInRender(activeNodeDrag.value)
           }
 
-          const queuedInitialNodePositions = queueInitialNodePositionSync()
-          if (queuedInitialNodePositions > 0) {
-            await flushPendingNodePosSync(3)
-          }
+          // Initial node-position writeback is queued asynchronously.
+          // Do not block snapshot application on that sync path.
+          queueInitialNodePositionSync()
 
           if (previousCount === 0 && graphGallery.value.length > 0) {
             hasMovedCamera.value = false
@@ -4010,10 +4069,16 @@ json.dumps({"applied": __vuepyter_applied_keys__})
                 ? VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs
                 : 0
             )
-            queueAnimationPlayback(playbackDelay)
+            const probeFrames = (
+              playbackDelay > 0
+                ? 0
+                : VISUALIZER_CONSTANTS.sync.animationPlaybackProbeFrames
+            )
+            queueAnimationPlayback(playbackDelay, { probeFrames })
           } else {
             animationPlaybackJob.cancel()
             animationPlaybackWasActive = false
+            animationPlaybackProbeFramesRemaining = 0
           }
 
           drawGallery()
@@ -4391,18 +4456,26 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         }
 
         async function flushPendingNodePosThenRefresh(delayMs = 0) {
-          if (pendingNodePosUpdates.size > 0) {
-            await flushPendingNodePosSync(3)
-          }
           queueGraphRefresh(delayMs)
+          if (pendingNodePosUpdates.size > 0) {
+            // Do not block the first post-cell refresh on node-pos synchronization:
+            // startup pending sync can take long enough to consume short animations.
+            void flushPendingNodePosSync(3)
+          }
         }
 
         function onCellComplete() {
+          queueAnimationPlayback(0, {
+            probeFrames: VISUALIZER_CONSTANTS.sync.animationPlaybackProbeFrames,
+          })
           void flushPendingNodePosThenRefresh()
         }
 
         function onWorkspaceSync(payload) {
           if (payload && payload.mode === 'always-live') {
+            queueAnimationPlayback(0, {
+              probeFrames: VISUALIZER_CONSTANTS.sync.animationPlaybackProbeFrames,
+            })
             void flushPendingNodePosThenRefresh(VISUALIZER_CONSTANTS.sync.workspaceSyncRefreshMs)
           }
         }
