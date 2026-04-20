@@ -3811,30 +3811,9 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           if (!label) {
             return
           }
-          const metrics = ctx.measureText(label)
-          const hasHorizontalMetrics = (
-            Number.isFinite(metrics.actualBoundingBoxLeft)
-            && Number.isFinite(metrics.actualBoundingBoxRight)
-            && (metrics.actualBoundingBoxLeft !== 0 || metrics.actualBoundingBoxRight !== 0)
-          )
-          const hasVerticalMetrics = (
-            Number.isFinite(metrics.actualBoundingBoxAscent)
-            && Number.isFinite(metrics.actualBoundingBoxDescent)
-            && (metrics.actualBoundingBoxAscent !== 0 || metrics.actualBoundingBoxDescent !== 0)
-          )
-
-          let drawX = centerX
-          let drawY = centerY
-          if (hasHorizontalMetrics) {
-            drawX = centerX - ((metrics.actualBoundingBoxRight - metrics.actualBoundingBoxLeft) * 0.5)
-          }
-          if (hasVerticalMetrics) {
-            drawY = centerY + ((metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) * 0.5)
-          }
-
           ctx.textAlign = 'center'
           ctx.textBaseline = 'middle'
-          ctx.fillText(label, drawX, drawY)
+          ctx.fillText(label, centerX, centerY)
         }
 
         function drawGallery() {
