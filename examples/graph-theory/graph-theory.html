@@ -214,10 +214,27 @@ def __vuepyter_walk_for_graphs__(value, path, depth, seen, out):
         return
 
 
-def __vuepyter_parse_metadata__(raw):
+def __vuepyter_parse_display_label__(raw):
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in ("true", "1", "yes", "y", "on"):
+            return True
+        if lowered in ("false", "0", "no", "n", "off"):
+            return False
+    return None
+
+
+def __vuepyter_parse_node_metadata__(raw):
     metadata = getattr(raw, "metadata", None)
     color = getattr(metadata, "color", None)
     size = getattr(metadata, "size", None)
+    display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
 
     if color is not None:
         try:
@@ -233,7 +250,87 @@ def __vuepyter_parse_metadata__(raw):
         except Exception:
             size = None
 
-    return color, size
+    return color, size, display_label
+
+
+def __vuepyter_parse_edge_metadata__(raw):
+    metadata = getattr(raw, "metadata", None)
+    color = getattr(metadata, "color", None)
+    width = getattr(metadata, "width", None)
+    if width is None:
+        width = getattr(metadata, "size", None)
+    display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
+
+    if color is not None:
+        try:
+            color = str(color).strip()
+        except Exception:
+            color = None
+        if not color:
+            color = None
+
+    if width is not None:
+        try:
+            width = float(width)
+        except Exception:
+            width = None
+
+    return color, width, display_label
+
+
+def __vuepyter_parse_pos__(raw_pos):
+    if raw_pos is None:
+        return None
+
+    if isinstance(raw_pos, (list, tuple)) and len(raw_pos) >= 2:
+        try:
+            return [float(raw_pos[0]), float(raw_pos[1])]
+        except Exception:
+            return None
+
+    if isinstance(raw_pos, dict):
+        x = raw_pos.get("x")
+        y = raw_pos.get("y")
+        if x is not None and y is not None:
+            try:
+                return [float(x), float(y)]
+            except Exception:
+                return None
+
+    x = getattr(raw_pos, "x", None)
+    y = getattr(raw_pos, "y", None)
+    if x is not None and y is not None:
+        try:
+            return [float(x), float(y)]
+        except Exception:
+            return None
+
+    return None
+
+
+def __vuepyter_graph_title_and_display_label__(graph_name, graph_obj):
+    metadata = getattr(graph_obj, "metadata", None)
+    title = None
+    display_label = None
+
+    if metadata is not None:
+        raw_title = getattr(metadata, "label", None)
+        if raw_title is not None:
+            try:
+                title = str(raw_title).strip()
+            except Exception:
+                title = None
+            if not title:
+                title = None
+
+        display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
+
+    if title is None:
+        title = graph_name
+    if display_label is None:
+        display_label = True
+
+    return title, display_label
 
 
 def __vuepyter_edge_endpoints__(raw_edge):
@@ -311,6 +408,7 @@ def __vuepyter_camera_payload__(camera_name, camera_obj):
 
 
 def __vuepyter_graph_to_payload__(graph_name, graph_obj):
+    graph_title, graph_display_label = __vuepyter_graph_title_and_display_label__(graph_name, graph_obj)
     raw_nodes = __vuepyter_iter_items__(getattr(graph_obj, "nodes", []), limit=512)
     raw_edges = __vuepyter_iter_items__(getattr(graph_obj, "edges", []), limit=1024)
 
@@ -319,8 +417,9 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 
     node_ids_by_object = {}
     node_ids_by_label = {}
+    node_payloads_by_id = {}
 
-    def ensure_node(raw):
+    def ensure_node(raw, node_index=None):
         if raw is None:
             return None
 
@@ -340,15 +439,23 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
             label = str(raw)
 
         if object_id is not None and object_id in node_ids_by_object:
-            return node_ids_by_object[object_id]
+            existing = node_ids_by_object[object_id]
+            if node_index is not None:
+                node_payloads_by_id[existing]["node_index"] = int(node_index)
+            node_payloads_by_id[existing]["uid"] = str(object_id)
+            return existing
 
         if label in node_ids_by_label:
             existing_id = node_ids_by_label[label]
             if object_id is not None:
                 node_ids_by_object[object_id] = existing_id
+                node_payloads_by_id[existing_id]["uid"] = str(object_id)
+            if node_index is not None:
+                node_payloads_by_id[existing_id]["node_index"] = int(node_index)
             return existing_id
 
-        color, size = __vuepyter_parse_metadata__(raw)
+        color, size, display_label = __vuepyter_parse_node_metadata__(raw)
+        pos = __vuepyter_parse_pos__(getattr(raw, "pos", None))
 
         node_id = f"n{len(nodes)}"
         node_payload = {
@@ -356,12 +463,21 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
             "label": label,
         }
 
+        if object_id is not None:
+            node_payload["uid"] = str(object_id)
+        if node_index is not None:
+            node_payload["node_index"] = int(node_index)
         if color is not None:
             node_payload["color"] = color
         if size is not None:
             node_payload["size"] = size
+        if display_label is not None:
+            node_payload["display_label"] = display_label
+        if pos is not None:
+            node_payload["pos"] = pos
 
         nodes.append(node_payload)
+        node_payloads_by_id[node_id] = node_payload
 
         if object_id is not None:
             node_ids_by_object[object_id] = node_id
@@ -369,22 +485,44 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 
         return node_id
 
-    for raw_node in raw_nodes:
-        ensure_node(raw_node)
+    for raw_node_index, raw_node in enumerate(raw_nodes):
+        ensure_node(raw_node, node_index=raw_node_index)
 
     for raw_edge in raw_edges:
         left, right = __vuepyter_edge_endpoints__(raw_edge)
-        source_id = ensure_node(left)
-        target_id = ensure_node(right)
+        source_id = ensure_node(left, node_index=None)
+        target_id = ensure_node(right, node_index=None)
         if source_id is None or target_id is None:
             continue
-        edges.append({
+        edge_payload = {
             "source": source_id,
             "target": target_id,
-        })
+        }
+
+        edge_color, edge_width, edge_display_label = __vuepyter_parse_edge_metadata__(raw_edge)
+        if edge_color is not None:
+            edge_payload["color"] = edge_color
+        if edge_width is not None:
+            edge_payload["width"] = edge_width
+        if edge_display_label is not None:
+            edge_payload["display_label"] = edge_display_label
+
+        edge_label = getattr(raw_edge, "label", None)
+        if edge_label is not None:
+            try:
+                edge_label = str(edge_label)
+            except Exception:
+                edge_label = None
+            if edge_label:
+                edge_payload["label"] = edge_label
+
+        edges.append(edge_payload)
 
     return {
         "name": graph_name,
+        "uid": str(id(graph_obj)),
+        "title": graph_title,
+        "display_label": graph_display_label,
         "directed": bool(getattr(graph_obj, "directed", False)),
         "nodes": nodes,
         "edges": edges,
@@ -456,6 +594,7 @@ json.dumps(payload)
         const notebookCameraName = ref('')
         const notebookCameraZ = ref(0)
         const isPanningCamera = ref(false)
+        const activeNodeDrag = ref(null)
         const hasMovedCamera = ref(false)
         const cameraScale = ref(1)
         const cameraOffsetX = ref(0)
@@ -469,6 +608,11 @@ json.dumps(payload)
         let cameraSyncTimer = null
         let cameraSyncInFlight = false
         let cameraSyncQueued = false
+        const graphRenderMemory = new Map()
+        let nodePosSyncTimer = null
+        let nodePosSyncInFlight = false
+        let nodePosSyncQueued = false
+        const pendingNodePosUpdates = new Map()
         let notebookCameraOverrideUntil = 0
 
         let worldBounds = {
@@ -495,6 +639,16 @@ json.dumps(payload)
               + (hash << 24)
           }
           return hash >>> 0
+        }
+
+        function graphStableKey(graph) {
+          if (graph && typeof graph.uid === 'string' && graph.uid) {
+            return `uid:${graph.uid}`
+          }
+          if (graph && typeof graph.name === 'string' && graph.name) {
+            return `name:${graph.name}`
+          }
+          return ''
         }
 
         function calculateBounds() {
@@ -552,6 +706,18 @@ json.dumps(payload)
             return []
           }
 
+          function parseNodePos(rawPos) {
+            if (!Array.isArray(rawPos) || rawPos.length < 2) {
+              return null
+            }
+            const x = Number(rawPos[0])
+            const y = Number(rawPos[1])
+            if (!Number.isFinite(x) || !Number.isFinite(y)) {
+              return null
+            }
+            return [x, y]
+          }
+
           const output = []
 
           for (const rawGraph of payload.graphs) {
@@ -573,13 +739,22 @@ json.dumps(payload)
                 continue
               }
               const label = rawNode.label == null ? id : String(rawNode.label)
+              const uid = rawNode.uid == null ? '' : String(rawNode.uid)
               const color = rawNode.color == null ? null : String(rawNode.color)
               const sizeNumber = Number(rawNode.size)
+              const nodeIndexNumber = Number(rawNode.node_index)
+              const displayLabel = typeof rawNode.display_label === 'boolean' ? rawNode.display_label : true
+              const pos = parseNodePos(rawNode.pos)
               nodes.push({
                 id,
                 label,
+                uid,
                 color,
                 size: Number.isFinite(sizeNumber) ? sizeNumber : null,
+                nodeIndex: Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null,
+                displayLabel,
+                pos,
+                posProvided: pos !== null,
               })
               nodeIds.add(id)
             }
@@ -594,11 +769,27 @@ json.dumps(payload)
               if (!source || !target || !nodeIds.has(source) || !nodeIds.has(target)) {
                 continue
               }
-              edges.push({ source, target })
+              const color = rawEdge.color == null ? null : String(rawEdge.color)
+              const widthNumber = Number(rawEdge.width)
+              const displayLabel = typeof rawEdge.display_label === 'boolean' ? rawEdge.display_label : false
+              const label = rawEdge.label == null ? '' : String(rawEdge.label)
+              edges.push({
+                source,
+                target,
+                color,
+                width: Number.isFinite(widthNumber) ? widthNumber : null,
+                displayLabel,
+                label,
+              })
             }
 
             output.push({
               name: typeof rawGraph.name === 'string' && rawGraph.name ? rawGraph.name : 'graph',
+              uid: rawGraph.uid == null ? '' : String(rawGraph.uid),
+              title: typeof rawGraph.title === 'string' && rawGraph.title
+                ? rawGraph.title
+                : (typeof rawGraph.name === 'string' && rawGraph.name ? rawGraph.name : 'graph'),
+              displayLabel: typeof rawGraph.display_label === 'boolean' ? rawGraph.display_label : true,
               directed: !!rawGraph.directed,
               nodes,
               edges,
@@ -616,12 +807,11 @@ json.dumps(payload)
           return 14
         }
 
-        function nodeColor(node) {
-          const fallback = '#10b981'
-          if (typeof node.color !== 'string' || !node.color.trim()) {
+        function resolveColor(rawColor, fallback) {
+          if (typeof rawColor !== 'string' || !rawColor.trim()) {
             return fallback
           }
-          const candidate = node.color.trim()
+          const candidate = rawColor.trim()
 
           if (typeof CSS !== 'undefined' && typeof CSS.supports === 'function' && CSS.supports('color', candidate)) {
             return candidate
@@ -646,6 +836,21 @@ json.dumps(payload)
           return named[key] || fallback
         }
 
+        function nodeColor(node) {
+          return resolveColor(node.color, '#10b981')
+        }
+
+        function edgeColor(edge) {
+          return resolveColor(edge.color, 'rgba(250, 250, 252, 0.95)')
+        }
+
+        function edgeStrokeWidth(edge) {
+          if (Number.isFinite(edge.width)) {
+            return clamp(1.4 + edge.width * 0.44, 1.2, 18)
+          }
+          return 5.8
+        }
+
         function layoutSingleGraph(graph) {
           const nodes = graph.nodes
           const edges = graph.edges
@@ -665,20 +870,25 @@ json.dumps(payload)
           }
 
           const positions = nodes.map((node, index) => {
+            const storedPos = Array.isArray(node.pos) && node.pos.length >= 2 ? node.pos : null
+            const fixed = storedPos !== null
             const angle = (Math.PI * 2 * index) / Math.max(1, total)
             const jitter = ((hashString(node.id) % 1000) / 1000 - 0.5) * 14
-            const radius = Math.max(120, total * 24)
+            const spreadRadius = Math.max(120, total * 24)
             return {
-              x: Math.cos(angle) * radius + jitter,
-              y: Math.sin(angle) * radius - jitter,
+              x: fixed ? Number(storedPos[0]) : Math.cos(angle) * spreadRadius + jitter,
+              y: fixed ? Number(storedPos[1]) : Math.sin(angle) * spreadRadius - jitter,
+              fixed,
               radius: nodeRadius(node),
               color: nodeColor(node),
+              displayLabel: node.displayLabel !== false,
             }
           })
 
           const indexById = new Map(nodes.map((node, index) => [node.id, index]))
+          const movableCount = positions.reduce((count, node) => count + (node.fixed ? 0 : 1), 0)
 
-          if (total <= 84 && edges.length > 0) {
+          if (movableCount > 0 && total <= 84 && edges.length > 0) {
             const springLength = clamp(180 / Math.sqrt(total), 48, 110)
             let temperature = Math.max(18, springLength * 0.36)
 
@@ -722,6 +932,9 @@ json.dumps(payload)
               }
 
               for (let index = 0; index < total; index += 1) {
+                if (positions[index].fixed) {
+                  continue
+                }
                 const dx = forceX[index]
                 const dy = forceY[index]
                 const distance = Math.hypot(dx, dy)
@@ -743,19 +956,25 @@ json.dumps(payload)
           let maxY = Number.NEGATIVE_INFINITY
 
           for (const point of positions) {
+            const rightPad = point.displayLabel ? 54 : 10
+            const topPad = point.displayLabel ? 38 : 10
             minX = Math.min(minX, point.x - point.radius - 8)
-            maxX = Math.max(maxX, point.x + point.radius + 54)
-            minY = Math.min(minY, point.y - point.radius - 38)
+            maxX = Math.max(maxX, point.x + point.radius + rightPad)
+            minY = Math.min(minY, point.y - point.radius - topPad)
             maxY = Math.max(maxY, point.y + point.radius + 14)
           }
 
           const nodeViews = nodes.map((node, index) => ({
             id: node.id,
             label: node.label,
-            x: positions[index].x,
-            y: positions[index].y,
+            uid: node.uid,
+            nodeIndex: node.nodeIndex,
+            localX: positions[index].x,
+            localY: positions[index].y,
             radius: positions[index].radius,
             color: positions[index].color,
+            displayLabel: positions[index].displayLabel,
+            posProvided: node.posProvided === true,
           }))
 
           return {
@@ -765,7 +984,7 @@ json.dumps(payload)
           }
         }
 
-        function rebuildWorldLayout() {
+        function rebuildWorldLayout(previousRenderByGraphName = null) {
           const graphs = graphGallery.value
           if (!Array.isArray(graphs) || graphs.length === 0) {
             worldBounds = {
@@ -789,24 +1008,86 @@ json.dumps(payload)
           let maxY = Number.NEGATIVE_INFINITY
 
           for (const graph of graphs) {
+            const graphKey = graphStableKey(graph)
+            const previousRender = (
+              (previousRenderByGraphName && previousRenderByGraphName.get(graphKey))
+              || graphRenderMemory.get(graphKey)
+            )
+
+            if (previousRender && Array.isArray(previousRender.nodes) && Array.isArray(graph.nodes)) {
+              const previousById = new Map(previousRender.nodes.map((node) => [node.id, node]))
+              const previousByUid = new Map(previousRender.nodes
+                .filter((node) => typeof node?.uid === 'string' && node.uid)
+                .map((node) => [node.uid, node]))
+              for (const node of graph.nodes) {
+                if (!node || node.posProvided === true || (Array.isArray(node.pos) && node.pos.length >= 2)) {
+                  continue
+                }
+                let previousNode = null
+                if (typeof node.uid === 'string' && node.uid) {
+                  previousNode = previousByUid.get(node.uid) || null
+                }
+                if (Number.isInteger(node.nodeIndex)
+                  && node.nodeIndex >= 0
+                  && node.nodeIndex < previousRender.nodes.length) {
+                  const candidate = previousRender.nodes[node.nodeIndex]
+                  if (candidate && candidate.id === node.id) {
+                    previousNode = candidate
+                  }
+                }
+                if (!previousNode) {
+                  previousNode = previousById.get(node.id) || null
+                }
+                if (!previousNode && typeof node.label === 'string' && node.label) {
+                  previousNode = previousRender.nodes.find((candidate) => (
+                    String(candidate?.label ?? '') === node.label
+                  )) || null
+                }
+                if (!previousNode) {
+                  continue
+                }
+                const px = Number(previousNode.localX)
+                const py = Number(previousNode.localY)
+                if (!Number.isFinite(px) || !Number.isFinite(py)) {
+                  continue
+                }
+                // Keep layout stable when a snapshot is temporarily missing freshly synced Node.pos values.
+                node.pos = [px, py]
+              }
+            }
+
             const local = layoutSingleGraph(graph)
             const width = Math.max(220, local.bounds.maxX - local.bounds.minX + 68)
             const height = Math.max(190, local.bounds.maxY - local.bounds.minY + 70)
 
-            if (columnIndex >= maxColumns) {
-              columnIndex = 0
-              cursorX = 0
-              cursorY += rowHeight + 180
-              rowHeight = 0
-            }
+            let offsetX
+            let offsetY
 
-            const offsetX = cursorX - local.bounds.minX + 34
-            const offsetY = cursorY - local.bounds.minY + 44
+            if (previousRender
+              && Number.isFinite(previousRender.offsetX)
+              && Number.isFinite(previousRender.offsetY)) {
+              // Preserve prior placement so node drags don't re-anchor the whole graph on refresh.
+              offsetX = previousRender.offsetX
+              offsetY = previousRender.offsetY
+            } else {
+              if (columnIndex >= maxColumns) {
+                columnIndex = 0
+                cursorX = 0
+                cursorY += rowHeight + 180
+                rowHeight = 0
+              }
+
+              offsetX = cursorX - local.bounds.minX + 34
+              offsetY = cursorY - local.bounds.minY + 44
+              cursorX += width + 190
+              rowHeight = Math.max(rowHeight, height)
+              columnIndex += 1
+            }
 
             const worldNodes = local.nodes.map((node) => ({
               ...node,
-              x: node.x + offsetX,
-              y: node.y + offsetY,
+              x: node.localX + offsetX,
+              y: node.localY + offsetY,
             }))
 
             const pointById = new Map(worldNodes.map((node) => [node.id, node]))
@@ -817,29 +1098,52 @@ json.dumps(payload)
                 if (!source || !target) {
                   return null
                 }
-                return { source, target }
+                return {
+                  source,
+                  target,
+                  color: edgeColor(edge),
+                  width: edgeStrokeWidth(edge),
+                  displayLabel: !!edge.displayLabel && !!edge.label,
+                  label: edge.label || '',
+                }
               })
               .filter((edge) => edge !== null)
 
             graph.render = {
-              title: graph.name,
+              title: graph.title || graph.name,
+              displayLabel: graph.displayLabel !== false,
               directed: graph.directed,
+              uid: graph.uid,
+              graphKey,
+              graphName: graph.name,
+              offsetX,
+              offsetY,
               titleX: (local.bounds.minX + local.bounds.maxX) / 2 + offsetX,
               titleY: local.bounds.minY + offsetY - 18,
               nodes: worldNodes,
               edges: worldEdges,
             }
+            graphRenderMemory.set(graphKey, {
+              offsetX,
+              offsetY,
+              nodes: worldNodes.map((node) => ({
+                id: node.id,
+                uid: node.uid,
+                nodeIndex: node.nodeIndex,
+                label: node.label,
+                localX: node.localX,
+                localY: node.localY,
+              })),
+            })
 
             for (const node of worldNodes) {
+              const rightPad = node.displayLabel ? 66 : 14
+              const topPad = node.displayLabel ? 48 : 14
               minX = Math.min(minX, node.x - node.radius - 12)
-              maxX = Math.max(maxX, node.x + node.radius + 66)
-              minY = Math.min(minY, node.y - node.radius - 48)
+              maxX = Math.max(maxX, node.x + node.radius + rightPad)
+              minY = Math.min(minY, node.y - node.radius - topPad)
               maxY = Math.max(maxY, node.y + node.radius + 18)
             }
-
-            cursorX += width + 190
-            rowHeight = Math.max(rowHeight, height)
-            columnIndex += 1
           }
 
           worldBounds = {
@@ -1013,6 +1317,477 @@ if __vuepyter_camera_obj__ is not None:
           }, delayMs)
         }
 
+        function pointerWorldPosition(event) {
+          const canvas = viewerCanvasRef.value
+          if (!canvas) {
+            return null
+          }
+
+          const rect = canvas.getBoundingClientRect()
+          const localX = event.clientX - rect.left
+          const localY = event.clientY - rect.top
+
+          return {
+            x: (localX - cameraOffsetX.value) / cameraScale.value,
+            y: (localY - cameraOffsetY.value) / cameraScale.value,
+          }
+        }
+
+        function findNodeAtWorldPosition(worldX, worldY) {
+          const graphs = graphGallery.value
+          if (!Array.isArray(graphs) || graphs.length === 0) {
+            return null
+          }
+
+          const hitPadding = 9 / Math.max(0.2, cameraScale.value)
+
+          for (let graphIndex = graphs.length - 1; graphIndex >= 0; graphIndex -= 1) {
+            const graph = graphs[graphIndex]
+            const render = graph?.render
+            if (!render || !Array.isArray(render.nodes)) {
+              continue
+            }
+            for (let nodeIndex = render.nodes.length - 1; nodeIndex >= 0; nodeIndex -= 1) {
+              const node = render.nodes[nodeIndex]
+              const dx = worldX - node.x
+              const dy = worldY - node.y
+              const limit = node.radius + hitPadding
+              if (dx * dx + dy * dy <= limit * limit) {
+                return { graph, node }
+              }
+            }
+          }
+
+          return null
+        }
+
+        function findRenderedNode(update) {
+          if (!update || typeof update !== 'object') {
+            return null
+          }
+          const graphs = graphGallery.value
+          if (!Array.isArray(graphs)) {
+            return null
+          }
+
+          const graphUid = typeof update.graphUid === 'string' ? update.graphUid : ''
+          const graphName = typeof update.graphName === 'string' ? update.graphName : ''
+          const graph = graphs.find((candidate) => (
+            candidate?.render
+            && ((graphUid && candidate?.uid === graphUid) || (graphName && candidate?.name === graphName))
+          ))
+          if (!graph || !Array.isArray(graph.render.nodes)) {
+            return null
+          }
+
+          const nodeUid = typeof update.nodeUid === 'string' ? update.nodeUid : ''
+          const nodeId = typeof update.nodeId === 'string' ? update.nodeId : ''
+          const nodeIndex = update.nodeIndex
+          const nodeLabel = typeof update.nodeLabel === 'string' ? update.nodeLabel : ''
+
+          if (nodeUid) {
+            const byUid = graph.render.nodes.find((candidate) => candidate?.uid === nodeUid)
+            if (byUid) {
+              return { graph, node: byUid }
+            }
+          }
+
+          if (Number.isInteger(nodeIndex)) {
+            const byIndex = graph.render.nodes.find((candidate) => (
+              candidate?.nodeIndex === nodeIndex && candidate?.id === nodeId
+            ))
+            if (byIndex) {
+              return { graph, node: byIndex }
+            }
+          }
+
+          const byId = graph.render.nodes.find((candidate) => candidate?.id === nodeId)
+          if (byId) {
+            return { graph, node: byId }
+          }
+
+          if (nodeLabel) {
+            const byLabel = graph.render.nodes.find((candidate) => String(candidate?.label ?? '') === nodeLabel)
+            if (byLabel) {
+              return { graph, node: byLabel }
+            }
+          }
+
+          return null
+        }
+
+        function updateNodePositionInRender(update) {
+          if (!update || typeof update !== 'object') {
+            return null
+          }
+
+          const found = findRenderedNode(update)
+          if (!found) {
+            return null
+          }
+
+          const { graph, node } = found
+          const render = graph.render
+          if (!render) {
+            return null
+          }
+
+          node.x = update.worldX
+          node.y = update.worldY
+          node.localX = update.worldX - render.offsetX
+          node.localY = update.worldY - render.offsetY
+
+          const modelNodes = Array.isArray(graph.nodes) ? graph.nodes : []
+          let modelNode = null
+          if (typeof node.uid === 'string' && node.uid) {
+            modelNode = modelNodes.find((candidate) => candidate?.uid === node.uid)
+          }
+          if (!modelNode && Number.isInteger(node.nodeIndex)
+            && node.nodeIndex >= 0
+            && node.nodeIndex < modelNodes.length
+            && modelNodes[node.nodeIndex]?.id === node.id) {
+            modelNode = modelNodes[node.nodeIndex]
+          }
+          if (!modelNode) {
+            modelNode = modelNodes.find((candidate) => candidate?.id === node.id)
+          }
+          if (modelNode) {
+            modelNode.pos = [node.localX, node.localY]
+            modelNode.posProvided = true
+          }
+          node.posProvided = true
+
+          return {
+            graphUid: graph.uid,
+            graphName: graph.name,
+            nodeUid: node.uid,
+            nodeId: node.id,
+            nodeIndex: Number.isInteger(node.nodeIndex) ? node.nodeIndex : null,
+            nodeLabel: node.label,
+            pos: [node.localX, node.localY],
+          }
+        }
+
+        async function syncNotebookNodePositions() {
+          if (nodePosSyncInFlight) {
+            nodePosSyncQueued = true
+            return
+          }
+
+          if (pendingNodePosUpdates.size === 0) {
+            return
+          }
+
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            queueNodePosSyncFlush(180)
+            return
+          }
+
+          const updateEntries = Array.from(pendingNodePosUpdates.entries())
+          const updates = updateEntries.map(([key, value]) => ({
+            ...value,
+            __k: key,
+          }))
+          const payload = JSON.stringify({ updates })
+
+          nodePosSyncInFlight = true
+          let syncSucceeded = false
+          let appliedKeys = null
+          try {
+            const rawApplied = await instance.runPythonAsync(`
+import json
+__vuepyter_node_pos_patch__ = json.loads(${JSON.stringify(payload)})
+__vuepyter_applied_keys__ = []
+for __item in __vuepyter_node_pos_patch__.get("updates", []):
+    if not isinstance(__item, dict):
+        continue
+    __graph_obj = None
+    __graph_uid_raw = __item.get("graph_uid")
+    if __graph_uid_raw is not None:
+        try:
+            __graph_uid = int(str(__graph_uid_raw))
+        except Exception:
+            __graph_uid = None
+        if __graph_uid is not None:
+            for __global_value in list(globals().values()):
+                try:
+                    if id(__global_value) == __graph_uid:
+                        __graph_obj = __global_value
+                        break
+                except Exception:
+                    pass
+
+    __graph_name = __item.get("graph")
+    if __graph_obj is None and isinstance(__graph_name, str) and __graph_name:
+        __graph_obj = globals().get(__graph_name)
+        if __graph_obj is None:
+            try:
+                __graph_obj = eval(__graph_name, globals(), globals())
+            except Exception:
+                __graph_obj = None
+    if __graph_obj is None:
+        continue
+    __nodes = getattr(__graph_obj, "nodes", None)
+    if __nodes is None:
+        continue
+    try:
+        __nodes = list(__nodes)
+    except Exception:
+        continue
+
+    __target = None
+    __node_uid_raw = __item.get("node_uid")
+    if __node_uid_raw is not None:
+        try:
+            __node_uid = int(str(__node_uid_raw))
+        except Exception:
+            __node_uid = None
+        if __node_uid is not None:
+            for __candidate in __nodes:
+                try:
+                    if id(__candidate) == __node_uid:
+                        __target = __candidate
+                        break
+                except Exception:
+                    pass
+
+    __node_index = __item.get("node_index")
+    if __target is None:
+        try:
+            __index = int(__node_index)
+        except Exception:
+            __index = -1
+        if 0 <= __index < len(__nodes):
+            __target = __nodes[__index]
+
+    __node_label = __item.get("node_label")
+    __node_id = __item.get("node_id")
+    if __target is None and __node_id is not None:
+        for __candidate in __nodes:
+            try:
+                __candidate_id = getattr(__candidate, "id", None)
+            except Exception:
+                __candidate_id = None
+            if __candidate_id is not None and str(__candidate_id) == str(__node_id):
+                __target = __candidate
+                break
+
+    if __target is None and __node_label is not None:
+        for __candidate in __nodes:
+            try:
+                __candidate_label = getattr(__candidate, "label")
+            except Exception:
+                __candidate_label = None
+            if __candidate_label is not None and str(__candidate_label) == str(__node_label):
+                __target = __candidate
+                break
+
+    if __target is None:
+        continue
+
+    __pos = __item.get("pos")
+    if not isinstance(__pos, (list, tuple)) or len(__pos) < 2:
+        continue
+    try:
+        __target.pos = (float(__pos[0]), float(__pos[1]))
+        __k = __item.get("__k")
+        if __k is not None:
+            __vuepyter_applied_keys__.append(str(__k))
+    except Exception:
+        pass
+json.dumps({"applied": __vuepyter_applied_keys__})
+`)
+            let parsed = null
+            try {
+              parsed = JSON.parse(typeof rawApplied === 'string' ? rawApplied : String(rawApplied))
+            } catch {
+              parsed = null
+            }
+            const applied = Array.isArray(parsed?.applied) ? parsed.applied : []
+            appliedKeys = new Set(applied.map((entry) => String(entry)))
+            syncSucceeded = appliedKeys.size > 0
+          } catch (error) {
+            console.error('Failed to sync node positions to notebook', error)
+          } finally {
+            if (appliedKeys && appliedKeys.size > 0) {
+              for (const [key] of updateEntries) {
+                if (appliedKeys.has(key)) {
+                  pendingNodePosUpdates.delete(key)
+                }
+              }
+            }
+            nodePosSyncInFlight = false
+            if (nodePosSyncQueued || pendingNodePosUpdates.size > 0) {
+              nodePosSyncQueued = false
+              queueNodePosSyncFlush(syncSucceeded ? 0 : 140)
+            }
+          }
+        }
+
+        function queueNodePosSyncFlush(delayMs = 0) {
+          if (nodePosSyncTimer !== null) {
+            return
+          }
+          nodePosSyncTimer = window.setTimeout(() => {
+            nodePosSyncTimer = null
+            void syncNotebookNodePositions()
+          }, delayMs)
+        }
+
+        function queueNodePosSync(update, delayMs = 22) {
+          if (!update || typeof update !== 'object') {
+            return
+          }
+          const graphUid = typeof update.graphUid === 'string' ? update.graphUid : ''
+          const graphName = typeof update.graphName === 'string' ? update.graphName : ''
+          if (!graphUid && !graphName) {
+            return
+          }
+          const nodeUid = typeof update.nodeUid === 'string' ? update.nodeUid : ''
+          const nodeId = typeof update.nodeId === 'string' ? update.nodeId : ''
+          if (!nodeUid && !nodeId) {
+            return
+          }
+          if (!Array.isArray(update.pos) || update.pos.length < 2) {
+            return
+          }
+          const key = `${graphUid || graphName}::${nodeUid || nodeId}`
+          pendingNodePosUpdates.set(key, {
+            graph_uid: graphUid,
+            graph: graphName,
+            node_uid: nodeUid,
+            node_id: nodeId,
+            node_index: update.nodeIndex,
+            node_label: update.nodeLabel,
+            pos: update.pos,
+          })
+          queueNodePosSyncFlush(delayMs)
+        }
+
+        function applyPendingNodePosToGraphs(graphs) {
+          if (!Array.isArray(graphs) || graphs.length === 0 || pendingNodePosUpdates.size === 0) {
+            return
+          }
+
+          for (const pending of pendingNodePosUpdates.values()) {
+            if (!pending || typeof pending !== 'object') {
+              continue
+            }
+            const graphUid = typeof pending.graph_uid === 'string' ? pending.graph_uid : ''
+            const graphName = typeof pending.graph === 'string' ? pending.graph : ''
+            if (!graphUid && !graphName) {
+              continue
+            }
+            const pos = Array.isArray(pending.pos) ? pending.pos : null
+            if (!pos || pos.length < 2) {
+              continue
+            }
+            const px = Number(pos[0])
+            const py = Number(pos[1])
+            if (!Number.isFinite(px) || !Number.isFinite(py)) {
+              continue
+            }
+
+            const graph = graphs.find((candidate) => (
+              (graphUid && candidate?.uid === graphUid)
+              || (graphName && candidate?.name === graphName)
+            ))
+            if (!graph || !Array.isArray(graph.nodes)) {
+              continue
+            }
+
+            const pendingNodeIndex = Number(pending.node_index)
+            const pendingNodeUid = pending.node_uid == null ? '' : String(pending.node_uid)
+            const pendingNodeId = pending.node_id == null ? '' : String(pending.node_id)
+            const pendingNodeLabel = pending.node_label == null ? '' : String(pending.node_label)
+
+            let node = null
+            if (pendingNodeUid) {
+              node = graph.nodes.find((candidate) => candidate?.uid === pendingNodeUid) || null
+            }
+            if (Number.isInteger(pendingNodeIndex)
+              && pendingNodeIndex >= 0
+              && pendingNodeIndex < graph.nodes.length) {
+              if (!node) {
+                node = graph.nodes[pendingNodeIndex]
+              }
+            }
+            if (!node && pendingNodeId) {
+              node = graph.nodes.find((candidate) => candidate?.id === pendingNodeId)
+            }
+            if (!node && pendingNodeLabel) {
+              node = graph.nodes.find((candidate) => String(candidate?.label ?? '') === pendingNodeLabel)
+            }
+            if (!node) {
+              continue
+            }
+
+            node.pos = [px, py]
+            node.posProvided = true
+          }
+        }
+
+        function queueInitialNodePositionSync() {
+          const graphs = graphGallery.value
+          if (!Array.isArray(graphs) || graphs.length === 0) {
+            return
+          }
+
+          for (const graph of graphs) {
+            const renderNodes = Array.isArray(graph?.render?.nodes) ? graph.render.nodes : []
+            if (renderNodes.length === 0) {
+              continue
+            }
+
+            const modelNodes = Array.isArray(graph.nodes) ? graph.nodes : []
+
+            for (const node of renderNodes) {
+              if (!node || node.posProvided === true) {
+                continue
+              }
+              if (!Number.isFinite(node.localX) || !Number.isFinite(node.localY)) {
+                continue
+              }
+
+              let modelNode = null
+              if (typeof node.uid === 'string' && node.uid) {
+                modelNode = modelNodes.find((candidate) => candidate?.uid === node.uid) || null
+              }
+              if (!modelNode && Number.isInteger(node.nodeIndex)
+                && node.nodeIndex >= 0
+                && node.nodeIndex < modelNodes.length
+                && modelNodes[node.nodeIndex]?.id === node.id) {
+                modelNode = modelNodes[node.nodeIndex]
+              }
+              if (!modelNode) {
+                modelNode = modelNodes.find((candidate) => candidate?.id === node.id)
+              }
+              if (!modelNode && typeof node.label === 'string' && node.label) {
+                modelNode = modelNodes.find((candidate) => String(candidate?.label ?? '') === node.label)
+              }
+              if (!modelNode) {
+                continue
+              }
+
+              const pos = [node.localX, node.localY]
+              modelNode.pos = pos
+              modelNode.posProvided = true
+              node.posProvided = true
+
+              queueNodePosSync({
+                graphUid: graph.uid,
+                graphName: graph.name,
+                nodeUid: node.uid,
+                nodeId: node.id,
+                nodeIndex: node.nodeIndex,
+                nodeLabel: node.label,
+                pos,
+              }, 0)
+            }
+          }
+        }
+
         function drawArrowhead(ctx, source, target, size) {
           const dx = target.x - source.x
           const dy = target.y - source.y
@@ -1066,21 +1841,39 @@ if __vuepyter_camera_obj__ is not None:
               continue
             }
 
-            ctx.strokeStyle = 'rgba(250, 250, 252, 0.95)'
-            ctx.lineWidth = 5.8 / cameraScale.value
-
-            ctx.beginPath()
             for (const edge of graph.render.edges) {
+              ctx.strokeStyle = edge.color
+              ctx.lineWidth = edge.width / cameraScale.value
+              ctx.beginPath()
               ctx.moveTo(edge.source.x, edge.source.y)
               ctx.lineTo(edge.target.x, edge.target.y)
+              ctx.stroke()
             }
-            ctx.stroke()
 
             if (graph.render.directed) {
-              ctx.fillStyle = 'rgba(250, 250, 252, 0.95)'
               for (const edge of graph.render.edges) {
+                ctx.fillStyle = edge.color
                 drawArrowhead(ctx, edge.source, edge.target, 13 / cameraScale.value)
               }
+            }
+
+            for (const edge of graph.render.edges) {
+              if (!edge.displayLabel) {
+                continue
+              }
+              const dx = edge.target.x - edge.source.x
+              const dy = edge.target.y - edge.source.y
+              const dist = Math.hypot(dx, dy) || 1
+              const nx = -dy / dist
+              const ny = dx / dist
+              const midX = (edge.source.x + edge.target.x) / 2 + nx * (14 / cameraScale.value)
+              const midY = (edge.source.y + edge.target.y) / 2 + ny * (14 / cameraScale.value)
+
+              ctx.fillStyle = edge.color
+              ctx.textAlign = 'center'
+              ctx.textBaseline = 'middle'
+              ctx.font = `italic ${20 / cameraScale.value}px "Times New Roman", Georgia, serif`
+              ctx.fillText(edge.label, midX, midY)
             }
 
             for (const node of graph.render.nodes) {
@@ -1099,28 +1892,50 @@ if __vuepyter_camera_obj__ is not None:
             ctx.textBaseline = 'middle'
             ctx.font = `italic ${34 / cameraScale.value}px "Times New Roman", Georgia, serif`
             for (const node of graph.render.nodes) {
+              if (!node.displayLabel) {
+                continue
+              }
               ctx.fillText(node.label, node.x + node.radius + 8, node.y - node.radius * 0.95)
             }
 
             ctx.fillStyle = 'rgba(238, 241, 246, 0.9)'
-            ctx.textAlign = 'center'
-            ctx.textBaseline = 'middle'
-            ctx.font = `italic ${26 / cameraScale.value}px "Times New Roman", Georgia, serif`
-            ctx.fillText(graph.render.title, graph.render.titleX, graph.render.titleY)
+            if (graph.render.displayLabel) {
+              ctx.textAlign = 'center'
+              ctx.textBaseline = 'middle'
+              ctx.font = `italic ${26 / cameraScale.value}px "Times New Roman", Georgia, serif`
+              ctx.fillText(graph.render.title, graph.render.titleX, graph.render.titleY)
+            }
           }
 
           ctx.restore()
         }
 
         function applySnapshot(payload) {
+          const previousRenderByGraphName = new Map(graphRenderMemory)
+          for (const graph of graphGallery.value) {
+            if (graph && graph.render && typeof graph.name === 'string' && graph.name) {
+              previousRenderByGraphName.set(graphStableKey(graph), graph.render)
+            }
+          }
+
           const previousCount = graphGallery.value.length
           graphGallery.value = normalizeGraphPayload(payload)
-          rebuildWorldLayout()
+          applyPendingNodePosToGraphs(graphGallery.value)
+          rebuildWorldLayout(previousRenderByGraphName)
+
+          if (activeNodeDrag.value
+            && Number.isFinite(activeNodeDrag.value.worldX)
+            && Number.isFinite(activeNodeDrag.value.worldY)) {
+            updateNodePositionInRender(activeNodeDrag.value)
+          }
+
+          queueInitialNodePositionSync()
 
           if (previousCount === 0 && graphGallery.value.length > 0) {
             hasMovedCamera.value = false
           }
 
+          const hadNotebookCamera = cameraControlledByNotebook.value
           const notebookCamera = parseNotebookCamera(payload)
           cameraControlledByNotebook.value = notebookCamera !== null
 
@@ -1130,6 +1945,7 @@ if __vuepyter_camera_obj__ is not None:
             const shouldApplyNotebookCamera =
               Date.now() >= notebookCameraOverrideUntil
               && !isPanningCamera.value
+              && !activeNodeDrag.value
 
             if (shouldApplyNotebookCamera) {
               applyNotebookCamera(notebookCamera)
@@ -1139,7 +1955,10 @@ if __vuepyter_camera_obj__ is not None:
             }
           } else {
             notebookCameraName.value = ''
-            fitCameraToWorld(false)
+            // Avoid viewport jumps when camera is temporarily unavailable during kernel transitions.
+            if (!hadNotebookCamera) {
+              fitCameraToWorld(false)
+            }
           }
 
           drawGallery()
@@ -1358,6 +2177,33 @@ if __vuepyter_camera_obj__ is not None:
           if (event.button !== 0) {
             return
           }
+
+          const world = pointerWorldPosition(event)
+          if (world) {
+            const hit = findNodeAtWorldPosition(world.x, world.y)
+            if (hit && hit.graph?.render) {
+              activeNodeDrag.value = {
+                pointerId: event.pointerId,
+                graphUid: hit.graph.uid,
+                graphName: hit.graph.name,
+                nodeUid: hit.node.uid,
+                nodeId: hit.node.id,
+                nodeIndex: Number.isInteger(hit.node.nodeIndex) ? hit.node.nodeIndex : null,
+                nodeLabel: hit.node.label,
+                grabDX: world.x - hit.node.x,
+                grabDY: world.y - hit.node.y,
+                worldX: hit.node.x,
+                worldY: hit.node.y,
+              }
+              isPanningCamera.value = false
+              if (event.currentTarget && typeof event.currentTarget.setPointerCapture === 'function') {
+                event.currentTarget.setPointerCapture(event.pointerId)
+              }
+              return
+            }
+          }
+
+          activeNodeDrag.value = null
           isPanningCamera.value = true
           lastPointerX = event.clientX
           lastPointerY = event.clientY
@@ -1367,6 +2213,28 @@ if __vuepyter_camera_obj__ is not None:
         }
 
         function onCanvasPointerMove(event) {
+          if (activeNodeDrag.value) {
+            if (activeNodeDrag.value.pointerId !== event.pointerId) {
+              return
+            }
+            const world = pointerWorldPosition(event)
+            if (!world) {
+              return
+            }
+
+            const drag = activeNodeDrag.value
+            drag.worldX = world.x - drag.grabDX
+            drag.worldY = world.y - drag.grabDY
+
+            const updated = updateNodePositionInRender(drag)
+            if (updated) {
+              queueNodePosSync(updated, 22)
+            }
+
+            drawGallery()
+            return
+          }
+
           if (!isPanningCamera.value) {
             return
           }
@@ -1383,6 +2251,28 @@ if __vuepyter_camera_obj__ is not None:
         }
 
         function onCanvasPointerUp(event) {
+          if (activeNodeDrag.value) {
+            if (activeNodeDrag.value.pointerId !== event.pointerId) {
+              return
+            }
+            const drag = activeNodeDrag.value
+            activeNodeDrag.value = null
+
+            const updated = updateNodePositionInRender(drag)
+            if (updated) {
+              queueNodePosSync(updated, 0)
+            }
+
+            if (event.currentTarget && typeof event.currentTarget.releasePointerCapture === 'function') {
+              try {
+                event.currentTarget.releasePointerCapture(event.pointerId)
+              } catch {
+                // Ignore release errors when pointer capture has already ended.
+              }
+            }
+            return
+          }
+
           if (!isPanningCamera.value) {
             return
           }
@@ -1475,6 +2365,10 @@ if __vuepyter_camera_obj__ is not None:
           if (cameraSyncTimer !== null) {
             clearTimeout(cameraSyncTimer)
             cameraSyncTimer = null
+          }
+          if (nodePosSyncTimer !== null) {
+            clearTimeout(nodePosSyncTimer)
+            nodePosSyncTimer = null
           }
         })
 
