@@ -697,7 +697,7 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
     for raw_node_index, raw_node in enumerate(raw_nodes):
         ensure_node(raw_node, node_index=raw_node_index)
 
-    for raw_edge in raw_edges:
+    for raw_edge_index, raw_edge in enumerate(raw_edges):
         left, right = __vuepyter_edge_endpoints__(raw_edge)
         source_id = ensure_node(left, node_index=None)
         target_id = ensure_node(right, node_index=None)
@@ -706,7 +706,12 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
         edge_payload = {
             "source": source_id,
             "target": target_id,
+            "edge_index": int(raw_edge_index),
         }
+        try:
+            edge_payload["uid"] = str(id(raw_edge))
+        except Exception:
+            pass
 
         edge_color, edge_width, edge_display_label = __vuepyter_parse_edge_metadata__(raw_edge)
         if edge_color is not None:
@@ -1080,7 +1085,7 @@ json.dumps(payload, allow_nan=False)
             }
 
             const edges = []
-            for (const rawEdge of rawEdges) {
+            for (const [rawEdgeIndex, rawEdge] of rawEdges.entries()) {
               if (!rawEdge || typeof rawEdge !== 'object') {
                 continue
               }
@@ -1092,11 +1097,17 @@ json.dumps(payload, allow_nan=False)
               const color = rawEdge.color == null ? null : String(rawEdge.color)
               const widthRaw = rawEdge.width
               const widthNumber = Number(widthRaw)
+              const edgeIndexNumber = Number(rawEdge.edge_index)
               const displayLabel = typeof rawEdge.display_label === 'boolean' ? rawEdge.display_label : false
               const label = rawEdge.label == null ? '' : String(rawEdge.label)
+              const uid = rawEdge.uid == null ? '' : String(rawEdge.uid)
               edges.push({
                 source,
                 target,
+                uid,
+                edgeIndex: Number.isInteger(edgeIndexNumber) && edgeIndexNumber >= 0
+                  ? edgeIndexNumber
+                  : rawEdgeIndex,
                 color,
                 width: Number.isFinite(widthNumber) && widthNumber >= 0 ? widthNumber : null,
                 displayLabel,
@@ -1510,8 +1521,18 @@ json.dumps(payload, allow_nan=False)
                 }
                 const width = edgeStrokeWidth(edge)
                 return {
+                  uid: typeof edge.uid === 'string' ? edge.uid : '',
+                  edgeIndex: Number.isInteger(edge.edgeIndex) && edge.edgeIndex >= 0 ? edge.edgeIndex : null,
                   source,
                   target,
+                  sourceId: source.id,
+                  targetId: target.id,
+                  sourceUid: typeof source.uid === 'string' ? source.uid : '',
+                  targetUid: typeof target.uid === 'string' ? target.uid : '',
+                  sourceNodeIndex: Number.isInteger(source.nodeIndex) ? source.nodeIndex : null,
+                  targetNodeIndex: Number.isInteger(target.nodeIndex) ? target.nodeIndex : null,
+                  sourceLabel: typeof source.label === 'string' ? source.label : '',
+                  targetLabel: typeof target.label === 'string' ? target.label : '',
                   color: edgeColor(edge),
                   width,
                   arrowSize: edgeArrowSize(width),
@@ -1801,6 +1822,50 @@ if __vuepyter_camera_obj__ is not None:
           cameraSyncJob.queue(delayMs)
         }
 
+        function parseAnimationNodeStylePatch(rawNode) {
+          if (!rawNode || typeof rawNode !== 'object') {
+            return null
+          }
+          const style = {}
+          if (Object.prototype.hasOwnProperty.call(rawNode, 'fill_color')) {
+            const fillColor = rawNode.fill_color == null ? '' : String(rawNode.fill_color).trim()
+            if (fillColor) {
+              style.fillColor = fillColor
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(rawNode, 'stroke_color')) {
+            const strokeColor = rawNode.stroke_color == null ? '' : String(rawNode.stroke_color).trim()
+            if (strokeColor) {
+              style.strokeColor = strokeColor
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(rawNode, 'label_color')) {
+            const labelColor = rawNode.label_color == null ? '' : String(rawNode.label_color).trim()
+            if (labelColor) {
+              style.labelColor = labelColor
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(rawNode, 'diameter')) {
+            const diameter = finiteNumber(rawNode.diameter)
+            if (diameter !== null && diameter >= 0) {
+              style.diameter = diameter
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(rawNode, 'stroke_width')) {
+            const strokeWidth = finiteNumber(rawNode.stroke_width)
+            if (strokeWidth !== null && strokeWidth >= 0) {
+              style.strokeWidth = strokeWidth
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(rawNode, 'label_size')) {
+            const labelSize = finiteNumber(rawNode.label_size)
+            if (labelSize !== null && labelSize >= 0) {
+              style.labelSize = labelSize
+            }
+          }
+          return Object.keys(style).length > 0 ? style : null
+        }
+
         function parseAnimationNodeUpdates(payload) {
           const rawNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
           const updates = []
@@ -1818,12 +1883,12 @@ if __vuepyter_camera_obj__ is not None:
             const nodeLabel = rawNode.node_label == null ? '' : String(rawNode.node_label)
             const nodeIndexNumber = Number(rawNode.node_index)
             const rawPos = Array.isArray(rawNode.pos) ? rawNode.pos : null
-            if (!rawPos || rawPos.length < 2) {
-              continue
-            }
-            const localX = Number(rawPos[0])
-            const localY = Number(rawPos[1])
-            if (!Number.isFinite(localX) || !Number.isFinite(localY)) {
+            const hasPos = Array.isArray(rawPos) && rawPos.length >= 2
+            const localX = hasPos ? Number(rawPos[0]) : null
+            const localY = hasPos ? Number(rawPos[1]) : null
+            const style = parseAnimationNodeStylePatch(rawNode)
+            const moving = !!rawNode.moving
+            if (!hasPos && !style && !moving) {
               continue
             }
             updates.push({
@@ -1833,9 +1898,84 @@ if __vuepyter_camera_obj__ is not None:
               nodeId,
               nodeIndex: Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null,
               nodeLabel,
-              localX,
-              localY,
-              moving: !!rawNode.moving,
+              hasPos: Number.isFinite(localX) && Number.isFinite(localY),
+              localX: Number.isFinite(localX) ? localX : null,
+              localY: Number.isFinite(localY) ? localY : null,
+              style,
+              moving,
+            })
+          }
+          return updates
+        }
+
+        function parseAnimationEdgeStylePatch(rawEdge) {
+          if (!rawEdge || typeof rawEdge !== 'object') {
+            return null
+          }
+          const style = {}
+          if (Object.prototype.hasOwnProperty.call(rawEdge, 'color')) {
+            const color = rawEdge.color == null ? '' : String(rawEdge.color).trim()
+            if (color) {
+              style.color = color
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(rawEdge, 'width')) {
+            const width = finiteNumber(rawEdge.width)
+            if (width !== null && width >= 0) {
+              style.width = width
+            }
+          }
+          return Object.keys(style).length > 0 ? style : null
+        }
+
+        function parseAnimationEdgeEndpointRef(rawEdge, endpointName) {
+          const endpointPrefix = endpointName === 'target' ? 'target' : 'source'
+          const nodeUid = rawEdge[`${endpointPrefix}_node_uid`] == null ? '' : String(rawEdge[`${endpointPrefix}_node_uid`])
+          const nodeId = rawEdge[`${endpointPrefix}_node_id`] == null ? '' : String(rawEdge[`${endpointPrefix}_node_id`])
+          const nodeLabel = rawEdge[`${endpointPrefix}_node_label`] == null ? '' : String(rawEdge[`${endpointPrefix}_node_label`])
+          const nodeIndexNumber = Number(rawEdge[`${endpointPrefix}_node_index`])
+          const nodeIndex = Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null
+          if (!nodeUid && !nodeId && !nodeLabel && !Number.isInteger(nodeIndex)) {
+            return null
+          }
+          return {
+            nodeUid,
+            nodeId,
+            nodeLabel,
+            nodeIndex,
+          }
+        }
+
+        function parseAnimationEdgeUpdates(payload) {
+          const rawEdges = Array.isArray(payload?.edges) ? payload.edges : []
+          const updates = []
+          for (const rawEdge of rawEdges) {
+            if (!rawEdge || typeof rawEdge !== 'object') {
+              continue
+            }
+            const graphUid = rawEdge.graph_uid == null ? '' : String(rawEdge.graph_uid)
+            const graphName = rawEdge.graph == null ? '' : String(rawEdge.graph)
+            if (!graphUid && !graphName) {
+              continue
+            }
+            const style = parseAnimationEdgeStylePatch(rawEdge)
+            const moving = !!rawEdge.moving
+            if (!style && !moving) {
+              continue
+            }
+            const edgeUid = rawEdge.edge_uid == null ? '' : String(rawEdge.edge_uid)
+            const edgeLabel = rawEdge.edge_label == null ? '' : String(rawEdge.edge_label)
+            const edgeIndexNumber = Number(rawEdge.edge_index)
+            updates.push({
+              graphUid,
+              graphName,
+              edgeUid,
+              edgeIndex: Number.isInteger(edgeIndexNumber) && edgeIndexNumber >= 0 ? edgeIndexNumber : null,
+              edgeLabel,
+              source: parseAnimationEdgeEndpointRef(rawEdge, 'source'),
+              target: parseAnimationEdgeEndpointRef(rawEdge, 'target'),
+              style,
+              moving,
             })
           }
           return updates
@@ -1845,30 +1985,39 @@ if __vuepyter_camera_obj__ is not None:
           if (!update || typeof update !== 'object') {
             return false
           }
-          const found = findRenderedNode({
-            graphUid: update.graphUid,
-            graphName: update.graphName,
-            nodeUid: update.nodeUid,
-            nodeId: update.nodeId,
-            nodeIndex: update.nodeIndex,
-            nodeLabel: update.nodeLabel,
-          })
-          if (!found || !found.graph || !found.graph.render) {
+
+          let applied = false
+          if (update.hasPos && Number.isFinite(update.localX) && Number.isFinite(update.localY)) {
+            const found = findRenderedNode(update)
+            if (found && found.graph?.render) {
+              const worldX = update.localX + found.graph.render.offsetX
+              const worldY = update.localY + found.graph.render.offsetY
+              const positionApplied = updateNodePositionInRender({
+                graphUid: update.graphUid,
+                graphName: update.graphName,
+                nodeUid: update.nodeUid,
+                nodeId: update.nodeId,
+                nodeIndex: update.nodeIndex,
+                nodeLabel: update.nodeLabel,
+                worldX,
+                worldY,
+              })
+              applied = !!positionApplied || applied
+            }
+          }
+
+          if (update.style) {
+            applied = updateNodeStyleInRender(update) || applied
+          }
+
+          return applied
+        }
+
+        function applyAnimationEdgeUpdate(update) {
+          if (!update || typeof update !== 'object' || !update.style) {
             return false
           }
-          const worldX = update.localX + found.graph.render.offsetX
-          const worldY = update.localY + found.graph.render.offsetY
-          updateNodePositionInRender({
-            graphUid: update.graphUid,
-            graphName: update.graphName,
-            nodeUid: update.nodeUid,
-            nodeId: update.nodeId,
-            nodeIndex: update.nodeIndex,
-            nodeLabel: update.nodeLabel,
-            worldX,
-            worldY,
-          })
-          return true
+          return updateEdgeStyleInRender(update)
         }
 
         const animationPlaybackJob = createQueuedAsyncJob(async () => {
@@ -1944,6 +2093,87 @@ def __vuepyter_parse_bool__(raw):
     return False
 
 
+def __vuepyter_parse_color__(value):
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    return text if text else None
+
+
+def __vuepyter_nonnegative_float__(value):
+    numeric = __vuepyter_finite_float__(value)
+    if numeric is None or numeric < 0:
+        return None
+    return numeric
+
+
+def __vuepyter_edge_endpoints__(raw_edge):
+    for __left_name, __right_name in (
+        ("frm", "to"),
+        ("from_node", "to_node"),
+        ("source", "target"),
+        ("u", "v"),
+        ("start", "end"),
+    ):
+        try:
+            __left = getattr(raw_edge, __left_name)
+            __right = getattr(raw_edge, __right_name)
+            return __left, __right
+        except Exception:
+            pass
+
+    try:
+        __left = getattr(raw_edge, "from")
+        __right = getattr(raw_edge, "to")
+        return __left, __right
+    except Exception:
+        pass
+
+    if isinstance(raw_edge, (list, tuple)) and len(raw_edge) >= 2:
+        return raw_edge[0], raw_edge[1]
+
+    return None, None
+
+
+def __vuepyter_node_ref_for_endpoint__(endpoint, by_object_id, by_label):
+    if endpoint is None:
+        return None
+
+    try:
+        endpoint_object_id = id(endpoint)
+    except Exception:
+        endpoint_object_id = None
+
+    if endpoint_object_id is not None:
+        ref = by_object_id.get(endpoint_object_id)
+        if isinstance(ref, dict):
+            return ref
+
+    endpoint_label = None
+    if hasattr(endpoint, "label"):
+        try:
+            endpoint_label = str(getattr(endpoint, "label"))
+        except Exception:
+            endpoint_label = None
+    elif isinstance(endpoint, str):
+        endpoint_label = endpoint
+    else:
+        try:
+            endpoint_label = str(endpoint)
+        except Exception:
+            endpoint_label = None
+
+    if isinstance(endpoint_label, str) and endpoint_label:
+        ref = by_label.get(endpoint_label)
+        if isinstance(ref, dict):
+            return ref
+
+    return None
+
+
 def __vuepyter_is_graph_like__(value):
     if value is None or isinstance(value, type):
         return False
@@ -1978,6 +2208,7 @@ __vuepyter_anim_query__ = json.loads(${JSON.stringify(payload)})
 __vuepyter_output__ = {
     "camera": None,
     "nodes": [],
+    "edges": [],
     "moving": False,
 }
 
@@ -2026,10 +2257,13 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
             __graph_uid = ""
 
     __graph_nodes = __vuepyter_iter_items__(getattr(__graph_obj, "nodes", []), limit=512)
+    __node_ref_by_object_id = {}
+    __node_ref_by_label = {}
     for __node_index, __node in enumerate(__graph_nodes):
         if __node is None:
             continue
 
+        __node_state = None
         __node_pos = None
         __node_moving = False
 
@@ -2054,11 +2288,59 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
                 or __vuepyter_parse_bool__(getattr(__node, "_moving", None))
             )
 
-        if __node_pos is None:
+        __node_metadata = getattr(__node, "metadata", None)
+        __node_fill_color = None
+        __node_stroke_color = None
+        __node_label_color = None
+        __node_diameter = None
+        __node_stroke_width = None
+        __node_label_size = None
+
+        if isinstance(__node_state, dict) and "fill_color" in __node_state:
+            __node_fill_color = __vuepyter_parse_color__(__node_state.get("fill_color"))
+        if __node_fill_color is None and __node_metadata is not None:
+            __node_fill_color = __vuepyter_parse_color__(getattr(__node_metadata, "fill_color", None))
+
+        if isinstance(__node_state, dict) and "stroke_color" in __node_state:
+            __node_stroke_color = __vuepyter_parse_color__(__node_state.get("stroke_color"))
+        if __node_stroke_color is None and __node_metadata is not None:
+            __node_stroke_color = __vuepyter_parse_color__(getattr(__node_metadata, "stroke_color", None))
+
+        if isinstance(__node_state, dict) and "label_color" in __node_state:
+            __node_label_color = __vuepyter_parse_color__(__node_state.get("label_color"))
+        if __node_label_color is None and __node_metadata is not None:
+            __node_label_color = __vuepyter_parse_color__(getattr(__node_metadata, "label_color", None))
+
+        if isinstance(__node_state, dict) and "diameter" in __node_state:
+            __node_diameter = __vuepyter_nonnegative_float__(__node_state.get("diameter"))
+        if __node_diameter is None and __node_metadata is not None:
+            __node_diameter = __vuepyter_nonnegative_float__(getattr(__node_metadata, "diameter", None))
+
+        if isinstance(__node_state, dict) and "stroke_width" in __node_state:
+            __node_stroke_width = __vuepyter_nonnegative_float__(__node_state.get("stroke_width"))
+        if __node_stroke_width is None and __node_metadata is not None:
+            __node_stroke_width = __vuepyter_nonnegative_float__(getattr(__node_metadata, "stroke_width", None))
+
+        if isinstance(__node_state, dict) and "label_size" in __node_state:
+            __node_label_size = __vuepyter_nonnegative_float__(__node_state.get("label_size"))
+        if __node_label_size is None and __node_metadata is not None:
+            __node_label_size = __vuepyter_nonnegative_float__(getattr(__node_metadata, "label_size", None))
+
+        __node_has_style = (
+            __node_fill_color is not None
+            or __node_stroke_color is not None
+            or __node_label_color is not None
+            or __node_diameter is not None
+            or __node_stroke_width is not None
+            or __node_label_size is not None
+        )
+        if __node_pos is None and not __node_has_style and not __node_moving:
             continue
 
+        __node_object_id = None
         try:
-            __node_uid = str(id(__node))
+            __node_object_id = id(__node)
+            __node_uid = str(__node_object_id)
         except Exception:
             __node_uid = ""
         try:
@@ -2070,17 +2352,145 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
         except Exception:
             __node_id = None
 
-        __vuepyter_output__["nodes"].append({
-            "graph_uid": str(__graph_uid) if __graph_uid is not None else "",
-            "graph": __graph_name,
+        __node_ref = {
             "node_uid": __node_uid,
             "node_id": "" if __node_id is None else str(__node_id),
             "node_index": __node_index,
             "node_label": __node_label,
-            "pos": __node_pos,
+        }
+        if __node_object_id is not None:
+            __node_ref_by_object_id[__node_object_id] = __node_ref
+        if __node_label and __node_label not in __node_ref_by_label:
+            __node_ref_by_label[__node_label] = __node_ref
+
+        __node_payload = {
+            "graph_uid": str(__graph_uid) if __graph_uid is not None else "",
+            "graph": __graph_name,
+            "node_uid": __node_ref["node_uid"],
+            "node_id": __node_ref["node_id"],
+            "node_index": __node_ref["node_index"],
+            "node_label": __node_ref["node_label"],
             "moving": bool(__node_moving),
-        })
+        }
+        if __node_pos is not None:
+            __node_payload["pos"] = __node_pos
+        if __node_fill_color is not None:
+            __node_payload["fill_color"] = __node_fill_color
+        if __node_stroke_color is not None:
+            __node_payload["stroke_color"] = __node_stroke_color
+        if __node_label_color is not None:
+            __node_payload["label_color"] = __node_label_color
+        if __node_diameter is not None:
+            __node_payload["diameter"] = __node_diameter
+        if __node_stroke_width is not None:
+            __node_payload["stroke_width"] = __node_stroke_width
+        if __node_label_size is not None:
+            __node_payload["label_size"] = __node_label_size
+
+        __vuepyter_output__["nodes"].append(__node_payload)
         if __node_moving:
+            __vuepyter_output__["moving"] = True
+
+    __graph_edges = __vuepyter_iter_items__(getattr(__graph_obj, "edges", []), limit=1024)
+    for __edge_index, __edge in enumerate(__graph_edges):
+        if __edge is None:
+            continue
+
+        __edge_state = None
+        __edge_moving = False
+        __edge_state_fn = getattr(__edge, "state", None)
+        if callable(__edge_state_fn):
+            try:
+                __edge_state = __edge_state_fn()
+            except Exception:
+                __edge_state = None
+            if isinstance(__edge_state, dict):
+                __edge_moving = __vuepyter_parse_bool__(__edge_state.get("moving", False))
+
+        if not __edge_moving:
+            __edge_moving = (
+                __vuepyter_parse_bool__(getattr(__edge, "moving", None))
+                or __vuepyter_parse_bool__(getattr(__edge, "_moving", None))
+            )
+
+        __edge_metadata = getattr(__edge, "metadata", None)
+        __edge_color = None
+        __edge_width = None
+        if isinstance(__edge_state, dict) and "color" in __edge_state:
+            __edge_color = __vuepyter_parse_color__(__edge_state.get("color"))
+        if __edge_color is None and __edge_metadata is not None:
+            __edge_color = __vuepyter_parse_color__(getattr(__edge_metadata, "color", None))
+
+        if isinstance(__edge_state, dict) and "width" in __edge_state:
+            __edge_width = __vuepyter_nonnegative_float__(__edge_state.get("width"))
+        if __edge_width is None and __edge_metadata is not None:
+            __edge_width = __vuepyter_nonnegative_float__(getattr(__edge_metadata, "width", None))
+
+        if __edge_color is None and __edge_width is None and not __edge_moving:
+            continue
+
+        try:
+            __edge_uid = str(id(__edge))
+        except Exception:
+            __edge_uid = ""
+        try:
+            __edge_label_raw = getattr(__edge, "label", "")
+            __edge_label = str(__edge_label_raw) if __edge_label_raw is not None else ""
+        except Exception:
+            __edge_label = ""
+
+        __edge_payload = {
+            "graph_uid": str(__graph_uid) if __graph_uid is not None else "",
+            "graph": __graph_name,
+            "edge_uid": __edge_uid,
+            "edge_index": __edge_index,
+            "edge_label": __edge_label,
+            "moving": bool(__edge_moving),
+        }
+        if __edge_color is not None:
+            __edge_payload["color"] = __edge_color
+        if __edge_width is not None:
+            __edge_payload["width"] = __edge_width
+
+        __edge_left, __edge_right = __vuepyter_edge_endpoints__(__edge)
+        __source_ref = __vuepyter_node_ref_for_endpoint__(
+            __edge_left,
+            __node_ref_by_object_id,
+            __node_ref_by_label,
+        )
+        __target_ref = __vuepyter_node_ref_for_endpoint__(
+            __edge_right,
+            __node_ref_by_object_id,
+            __node_ref_by_label,
+        )
+        if isinstance(__source_ref, dict):
+            __edge_payload["source_node_uid"] = __source_ref.get("node_uid", "")
+            __edge_payload["source_node_id"] = __source_ref.get("node_id", "")
+            __edge_payload["source_node_index"] = __source_ref.get("node_index", None)
+            __edge_payload["source_node_label"] = __source_ref.get("node_label", "")
+        if isinstance(__target_ref, dict):
+            __edge_payload["target_node_uid"] = __target_ref.get("node_uid", "")
+            __edge_payload["target_node_id"] = __target_ref.get("node_id", "")
+            __edge_payload["target_node_index"] = __target_ref.get("node_index", None)
+            __edge_payload["target_node_label"] = __target_ref.get("node_label", "")
+
+        if not isinstance(__source_ref, dict) and __edge_left is not None:
+            try:
+                __source_label = str(getattr(__edge_left, "label"))
+            except Exception:
+                __source_label = str(__edge_left)
+            if __source_label:
+                __edge_payload["source_node_label"] = __source_label
+        if not isinstance(__target_ref, dict) and __edge_right is not None:
+            try:
+                __target_label = str(getattr(__edge_right, "label"))
+            except Exception:
+                __target_label = str(__edge_right)
+            if __target_label:
+                __edge_payload["target_node_label"] = __target_label
+
+        __vuepyter_output__["edges"].append(__edge_payload)
+        if __edge_moving:
             __vuepyter_output__["moving"] = True
 
 json.dumps(__vuepyter_output__, allow_nan=False)
@@ -2093,6 +2503,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
             const payloadObj = JSON.parse(text)
             const notebookCamera = parseNotebookCamera(payloadObj)
             const nodeUpdates = parseAnimationNodeUpdates(payloadObj)
+            const edgeUpdates = parseAnimationEdgeUpdates(payloadObj)
 
             let shouldRedraw = false
             let hasMovingAnimation = false
@@ -2114,6 +2525,16 @@ json.dumps(__vuepyter_output__, allow_nan=False)
 
             for (const update of nodeUpdates) {
               const applied = applyAnimationNodeUpdate(update)
+              if (applied) {
+                shouldRedraw = true
+              }
+              if (update.moving) {
+                hasMovingAnimation = true
+              }
+            }
+
+            for (const update of edgeUpdates) {
+              const applied = applyAnimationEdgeUpdate(update)
               if (applied) {
                 shouldRedraw = true
               }
@@ -2208,7 +2629,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           return null
         }
 
-        function findRenderedNode(update) {
+        function findRenderedGraph(update) {
           if (!update || typeof update !== 'object') {
             return null
           }
@@ -2216,50 +2637,195 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           if (!Array.isArray(graphs)) {
             return null
           }
-
           const graphUid = typeof update.graphUid === 'string' ? update.graphUid : ''
           const graphName = typeof update.graphName === 'string' ? update.graphName : ''
-          const graph = graphs.find((candidate) => (
+          if (!graphUid && !graphName) {
+            return null
+          }
+          return graphs.find((candidate) => (
             candidate?.render
             && ((graphUid && candidate?.uid === graphUid) || (graphName && candidate?.name === graphName))
-          ))
-          if (!graph || !Array.isArray(graph.render.nodes)) {
+          )) || null
+        }
+
+        function findRenderedNodeInGraph(graph, identity) {
+          if (!graph?.render || !Array.isArray(graph.render.nodes) || !identity || typeof identity !== 'object') {
             return null
           }
 
-          const nodeUid = typeof update.nodeUid === 'string' ? update.nodeUid : ''
-          const nodeId = typeof update.nodeId === 'string' ? update.nodeId : ''
-          const nodeIndex = update.nodeIndex
-          const nodeLabel = typeof update.nodeLabel === 'string' ? update.nodeLabel : ''
+          const nodeUid = typeof identity.nodeUid === 'string' ? identity.nodeUid : ''
+          const nodeId = typeof identity.nodeId === 'string' ? identity.nodeId : ''
+          const nodeIndex = identity.nodeIndex
+          const nodeLabel = typeof identity.nodeLabel === 'string' ? identity.nodeLabel : ''
 
           if (nodeUid) {
             const byUid = graph.render.nodes.find((candidate) => candidate?.uid === nodeUid)
             if (byUid) {
-              return { graph, node: byUid }
+              return byUid
             }
           }
 
           if (Number.isInteger(nodeIndex)) {
             const byIndex = graph.render.nodes.find((candidate) => (
-              candidate?.nodeIndex === nodeIndex && candidate?.id === nodeId
+              candidate?.nodeIndex === nodeIndex
+              && (!nodeId || candidate?.id === nodeId)
             ))
             if (byIndex) {
-              return { graph, node: byIndex }
+              return byIndex
             }
           }
 
-          const byId = graph.render.nodes.find((candidate) => candidate?.id === nodeId)
-          if (byId) {
-            return { graph, node: byId }
+          if (nodeId) {
+            const byId = graph.render.nodes.find((candidate) => candidate?.id === nodeId)
+            if (byId) {
+              return byId
+            }
           }
 
           if (nodeLabel) {
             const byLabel = graph.render.nodes.find((candidate) => String(candidate?.label ?? '') === nodeLabel)
             if (byLabel) {
-              return { graph, node: byLabel }
+              return byLabel
             }
           }
 
+          return null
+        }
+
+        function findRenderedNode(update) {
+          const graph = findRenderedGraph(update)
+          if (!graph) {
+            return null
+          }
+          const node = findRenderedNodeInGraph(graph, {
+            nodeUid: update.nodeUid,
+            nodeId: update.nodeId,
+            nodeIndex: update.nodeIndex,
+            nodeLabel: update.nodeLabel,
+          })
+          if (node) {
+            return { graph, node }
+          }
+          return null
+        }
+
+        function findModelNodeForRenderedNode(graph, node) {
+          if (!graph || !node) {
+            return null
+          }
+          const modelNodes = Array.isArray(graph.nodes) ? graph.nodes : []
+          let modelNode = null
+          if (typeof node.uid === 'string' && node.uid) {
+            modelNode = modelNodes.find((candidate) => candidate?.uid === node.uid)
+          }
+          if (!modelNode && Number.isInteger(node.nodeIndex)
+            && node.nodeIndex >= 0
+            && node.nodeIndex < modelNodes.length
+            && modelNodes[node.nodeIndex]?.id === node.id) {
+            modelNode = modelNodes[node.nodeIndex]
+          }
+          if (!modelNode) {
+            modelNode = modelNodes.find((candidate) => candidate?.id === node.id)
+          }
+          return modelNode
+        }
+
+        function findRenderedEdge(update) {
+          const graph = findRenderedGraph(update)
+          if (!graph || !Array.isArray(graph.render?.edges)) {
+            return null
+          }
+
+          const edges = graph.render.edges
+          const edgeUid = typeof update.edgeUid === 'string' ? update.edgeUid : ''
+          const edgeIndex = update.edgeIndex
+          const edgeLabel = typeof update.edgeLabel === 'string' ? update.edgeLabel : ''
+          const sourceRef = update.source && typeof update.source === 'object' ? update.source : null
+          const targetRef = update.target && typeof update.target === 'object' ? update.target : null
+
+          if (edgeUid) {
+            const byUid = edges.find((candidate) => candidate?.uid === edgeUid)
+            if (byUid) {
+              return { graph, edge: byUid }
+            }
+          }
+
+          if (Number.isInteger(edgeIndex)) {
+            const byIndex = edges.find((candidate) => candidate?.edgeIndex === edgeIndex)
+            if (byIndex) {
+              return { graph, edge: byIndex }
+            }
+          }
+
+          function edgeEndpointMatches(edge, ref, endpointPrefix) {
+            if (!edge || !ref || typeof ref !== 'object') {
+              return false
+            }
+            const uidKey = endpointPrefix === 'target' ? 'targetUid' : 'sourceUid'
+            const idKey = endpointPrefix === 'target' ? 'targetId' : 'sourceId'
+            const indexKey = endpointPrefix === 'target' ? 'targetNodeIndex' : 'sourceNodeIndex'
+            const labelKey = endpointPrefix === 'target' ? 'targetLabel' : 'sourceLabel'
+            if (typeof ref.nodeUid === 'string' && ref.nodeUid && edge[uidKey] === ref.nodeUid) {
+              return true
+            }
+            if (typeof ref.nodeId === 'string' && ref.nodeId && edge[idKey] === ref.nodeId) {
+              return true
+            }
+            if (Number.isInteger(ref.nodeIndex) && Number.isInteger(edge[indexKey]) && edge[indexKey] === ref.nodeIndex) {
+              return true
+            }
+            if (typeof ref.nodeLabel === 'string' && ref.nodeLabel) {
+              return String(edge[labelKey] ?? '') === ref.nodeLabel
+            }
+            return false
+          }
+
+          if (sourceRef || targetRef) {
+            const byEndpoints = edges.find((candidate) => {
+              const sourceMatches = !sourceRef || edgeEndpointMatches(candidate, sourceRef, 'source')
+              const targetMatches = !targetRef || edgeEndpointMatches(candidate, targetRef, 'target')
+              return sourceMatches && targetMatches
+            })
+            if (byEndpoints) {
+              return { graph, edge: byEndpoints }
+            }
+          }
+
+          if (edgeLabel) {
+            const byLabel = edges.find((candidate) => String(candidate?.label ?? '') === edgeLabel)
+            if (byLabel) {
+              return { graph, edge: byLabel }
+            }
+          }
+
+          return null
+        }
+
+        function findModelEdgeForRenderedEdge(graph, edge) {
+          if (!graph || !edge) {
+            return null
+          }
+          const modelEdges = Array.isArray(graph.edges) ? graph.edges : []
+          if (typeof edge.uid === 'string' && edge.uid) {
+            const byUid = modelEdges.find((candidate) => candidate?.uid === edge.uid)
+            if (byUid) {
+              return byUid
+            }
+          }
+          if (Number.isInteger(edge.edgeIndex) && edge.edgeIndex >= 0 && edge.edgeIndex < modelEdges.length) {
+            const byIndex = modelEdges[edge.edgeIndex]
+            if (byIndex) {
+              return byIndex
+            }
+          }
+          const byEndpoints = modelEdges.find((candidate) => (
+            candidate?.source === edge.sourceId
+            && candidate?.target === edge.targetId
+            && String(candidate?.label ?? '') === String(edge.label ?? '')
+          ))
+          if (byEndpoints) {
+            return byEndpoints
+          }
           return null
         }
 
@@ -2284,20 +2850,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           node.localX = update.worldX - render.offsetX
           node.localY = update.worldY - render.offsetY
 
-          const modelNodes = Array.isArray(graph.nodes) ? graph.nodes : []
-          let modelNode = null
-          if (typeof node.uid === 'string' && node.uid) {
-            modelNode = modelNodes.find((candidate) => candidate?.uid === node.uid)
-          }
-          if (!modelNode && Number.isInteger(node.nodeIndex)
-            && node.nodeIndex >= 0
-            && node.nodeIndex < modelNodes.length
-            && modelNodes[node.nodeIndex]?.id === node.id) {
-            modelNode = modelNodes[node.nodeIndex]
-          }
-          if (!modelNode) {
-            modelNode = modelNodes.find((candidate) => candidate?.id === node.id)
-          }
+          const modelNode = findModelNodeForRenderedNode(graph, node)
           if (modelNode) {
             modelNode.pos = [node.localX, node.localY]
             modelNode.posProvided = true
@@ -2313,6 +2866,120 @@ json.dumps(__vuepyter_output__, allow_nan=False)
             nodeLabel: node.label,
             pos: [node.localX, node.localY],
           }
+        }
+
+        function updateNodeStyleInRender(update) {
+          if (!update || typeof update !== 'object' || !update.style || typeof update.style !== 'object') {
+            return false
+          }
+          const found = findRenderedNode(update)
+          if (!found) {
+            return false
+          }
+          const { graph, node } = found
+          const modelNode = findModelNodeForRenderedNode(graph, node)
+          const style = update.style
+          let applied = false
+
+          if (typeof style.fillColor === 'string' && style.fillColor) {
+            if (node.fillColor !== style.fillColor) {
+              node.fillColor = style.fillColor
+              applied = true
+            }
+            if (modelNode) {
+              modelNode.fillColor = style.fillColor
+            }
+          }
+          if (typeof style.strokeColor === 'string' && style.strokeColor) {
+            if (node.strokeColor !== style.strokeColor) {
+              node.strokeColor = style.strokeColor
+              applied = true
+            }
+            if (modelNode) {
+              modelNode.strokeColor = style.strokeColor
+            }
+          }
+          if (typeof style.labelColor === 'string' && style.labelColor) {
+            if (node.labelColor !== style.labelColor) {
+              node.labelColor = style.labelColor
+              applied = true
+            }
+            if (modelNode) {
+              modelNode.labelColor = style.labelColor
+            }
+          }
+          if (Number.isFinite(style.diameter) && style.diameter >= 0) {
+            const nextRadius = nodeRadius({ diameter: style.diameter })
+            if (Number.isFinite(nextRadius) && Math.abs(nextRadius - Number(node.radius)) > 0.0001) {
+              node.radius = nextRadius
+              applied = true
+            }
+            if (modelNode) {
+              modelNode.diameter = style.diameter
+            }
+          }
+          if (Number.isFinite(style.strokeWidth) && style.strokeWidth >= 0) {
+            const nextStrokeWidth = nodeStrokeWidth({ strokeWidth: style.strokeWidth })
+            if (Number.isFinite(nextStrokeWidth) && Math.abs(nextStrokeWidth - Number(node.strokeWidth)) > 0.0001) {
+              node.strokeWidth = nextStrokeWidth
+              applied = true
+            }
+            if (modelNode) {
+              modelNode.strokeWidth = style.strokeWidth
+            }
+          }
+          if (Number.isFinite(style.labelSize) && style.labelSize >= 0) {
+            const nextLabelSize = nodeLabelFontSize({ labelSize: style.labelSize }, node.radius)
+            if (Number.isFinite(nextLabelSize) && Math.abs(nextLabelSize - Number(node.labelSize)) > 0.0001) {
+              node.labelSize = nextLabelSize
+              applied = true
+            }
+            if (modelNode) {
+              modelNode.labelSize = style.labelSize
+            }
+          }
+
+          return applied
+        }
+
+        function updateEdgeStyleInRender(update) {
+          if (!update || typeof update !== 'object' || !update.style || typeof update.style !== 'object') {
+            return false
+          }
+          const found = findRenderedEdge(update)
+          if (!found) {
+            return false
+          }
+          const { graph, edge } = found
+          const modelEdge = findModelEdgeForRenderedEdge(graph, edge)
+          const style = update.style
+          let applied = false
+
+          if (typeof style.color === 'string' && style.color) {
+            const nextColor = edgeColor({ color: style.color })
+            if (edge.color !== nextColor) {
+              edge.color = nextColor
+              applied = true
+            }
+            if (modelEdge) {
+              modelEdge.color = style.color
+            }
+          }
+          if (Number.isFinite(style.width) && style.width >= 0) {
+            const nextWidth = edgeStrokeWidth({ width: style.width })
+            if (Number.isFinite(nextWidth) && Math.abs(nextWidth - Number(edge.width)) > 0.0001) {
+              edge.width = nextWidth
+              edge.arrowSize = edgeArrowSize(nextWidth)
+              edge.labelOffset = edgeLabelOffset(nextWidth)
+              edge.labelSize = edgeLabelFontSize(nextWidth)
+              applied = true
+            }
+            if (modelEdge) {
+              modelEdge.width = style.width
+            }
+          }
+
+          return applied
         }
 
         function pruneStalePendingNodePosUpdates(now = Date.now()) {
