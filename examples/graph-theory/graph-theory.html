@@ -121,9 +121,74 @@
 
     const NOTEBOOK_URL = './graph-theory.ipynb'
     const DESKTOP_BREAKPOINT = 960
+    const VISUALIZER_CONSTANTS = Object.freeze({
+      viewport: Object.freeze({
+        pageHorizontalPadding: 12,
+        splitMinLeft: 280,
+        splitMinRight: 420,
+        defaultWorldBounds: Object.freeze({
+          minX: -240,
+          maxX: 240,
+          minY: -160,
+          maxY: 160,
+        }),
+        fitPadding: 72,
+        fitScaleMin: 0.14,
+        fitScaleMax: 3.2,
+        notebookCameraHeightMin: 60,
+        notebookCameraHeightMax: 16000,
+        notebookCameraScaleMin: 0.04,
+        notebookCameraScaleMax: 8,
+      }),
+      layout: Object.freeze({
+        minGraphWidth: 220,
+        minGraphHeight: 190,
+        graphOffsetX: 34,
+        graphOffsetY: 44,
+        graphRowGap: 180,
+        graphColumnGap: 190,
+        titleOffsetY: 18,
+        nodeLabelRightPadding: 66,
+        nodeLabelTopPadding: 48,
+        nodeNoLabelPadding: 14,
+        nodeBoundsPadding: 12,
+        nodeBottomPadding: 18,
+      }),
+      zoom: Object.freeze({
+        wheelFactor: 0.0012,
+        scaleMin: 0.1,
+        scaleMax: 5,
+        nodeHitPadding: 9,
+        minHitScale: 0.2,
+      }),
+      sync: Object.freeze({
+        graphRefreshWhileNotebookCameraMovingMs: 16,
+        workspaceSyncRefreshMs: 80,
+        notebookCameraSyncMs: 32,
+        notebookCameraOverrideMs: 140,
+        nodeDragSyncMs: 22,
+        nodeSyncRetryMs: 140,
+        nodeSyncNoKernelRetryMs: 180,
+        pendingNodeLocalOverrideMs: 1200,
+        pendingNodePosEqualityEpsilon: 0.0001,
+        pendingNodeUpdateMaxAttempts: 120,
+        pendingNodeUpdateMaxAgeMs: 30000,
+      }),
+    })
 
     const GRAPH_SNAPSHOT_SOURCE = `
 import json
+import math
+
+
+def __vuepyter_finite_float__(value, default=None):
+    try:
+        numeric = float(value)
+    except Exception:
+        return default
+    if not math.isfinite(numeric):
+        return default
+    return numeric
 
 
 def __vuepyter_is_graph_like__(value):
@@ -156,9 +221,7 @@ def __vuepyter_is_camera_like__(value):
         return False
     if center is None:
         return False
-    try:
-        float(height)
-    except Exception:
+    if __vuepyter_finite_float__(height, default=None) is None:
         return False
     return True
 
@@ -186,6 +249,13 @@ def __vuepyter_iter_items__(value, limit=512):
     return out
 
 
+def __vuepyter_path_append_key__(path, key):
+    encoded = repr(key)
+    if path:
+        return f"{path}[{encoded}]"
+    return f"[{encoded}]"
+
+
 def __vuepyter_walk_for_graphs__(value, path, depth, seen, out):
     if depth < 0:
         return
@@ -201,7 +271,7 @@ def __vuepyter_walk_for_graphs__(value, path, depth, seen, out):
 
     if isinstance(value, dict):
         for index, (item_key, item_value) in enumerate(list(value.items())[:64]):
-            child_path = f"{path}.{item_key}" if path else str(item_key)
+            child_path = __vuepyter_path_append_key__(path, item_key)
             __vuepyter_walk_for_graphs__(item_value, child_path, depth - 1, seen, out)
             if index >= 63:
                 break
@@ -212,6 +282,17 @@ def __vuepyter_walk_for_graphs__(value, path, depth, seen, out):
             child_path = f"{path}[{index}]"
             __vuepyter_walk_for_graphs__(item, child_path, depth - 1, seen, out)
         return
+
+    try:
+        attr_items = list(vars(value).items())[:64]
+    except Exception:
+        attr_items = []
+
+    for attr_name, attr_value in attr_items:
+        if not isinstance(attr_name, str) or not attr_name or not attr_name.isidentifier():
+            continue
+        child_path = f"{path}.{attr_name}" if path else attr_name
+        __vuepyter_walk_for_graphs__(attr_value, child_path, depth - 1, seen, out)
 
 
 def __vuepyter_parse_display_label__(raw):
@@ -245,10 +326,7 @@ def __vuepyter_parse_node_metadata__(raw):
             color = None
 
     if size is not None:
-        try:
-            size = float(size)
-        except Exception:
-            size = None
+        size = __vuepyter_finite_float__(size, default=None)
 
     return color, size, display_label
 
@@ -270,10 +348,7 @@ def __vuepyter_parse_edge_metadata__(raw):
             color = None
 
     if width is not None:
-        try:
-            width = float(width)
-        except Exception:
-            width = None
+        width = __vuepyter_finite_float__(width, default=None)
 
     return color, width, display_label
 
@@ -283,27 +358,30 @@ def __vuepyter_parse_pos__(raw_pos):
         return None
 
     if isinstance(raw_pos, (list, tuple)) and len(raw_pos) >= 2:
-        try:
-            return [float(raw_pos[0]), float(raw_pos[1])]
-        except Exception:
-            return None
+        x = __vuepyter_finite_float__(raw_pos[0], default=None)
+        y = __vuepyter_finite_float__(raw_pos[1], default=None)
+        if x is not None and y is not None:
+            return [x, y]
+        return None
 
     if isinstance(raw_pos, dict):
         x = raw_pos.get("x")
         y = raw_pos.get("y")
         if x is not None and y is not None:
-            try:
-                return [float(x), float(y)]
-            except Exception:
-                return None
+            px = __vuepyter_finite_float__(x, default=None)
+            py = __vuepyter_finite_float__(y, default=None)
+            if px is not None and py is not None:
+                return [px, py]
+            return None
 
     x = getattr(raw_pos, "x", None)
     y = getattr(raw_pos, "y", None)
     if x is not None and y is not None:
-        try:
-            return [float(x), float(y)]
-        except Exception:
-            return None
+        px = __vuepyter_finite_float__(x, default=None)
+        py = __vuepyter_finite_float__(y, default=None)
+        if px is not None and py is not None:
+            return [px, py]
+        return None
 
     return None
 
@@ -362,27 +440,33 @@ def __vuepyter_edge_endpoints__(raw_edge):
 
 
 def __vuepyter_parse_center__(raw_center):
-    if isinstance(raw_center, (list, tuple)) and len(raw_center) >= 3:
-        try:
-            return [float(raw_center[0]), float(raw_center[1]), float(raw_center[2])]
-        except Exception:
-            return [0.0, 0.0, 0.0]
+    if isinstance(raw_center, (list, tuple)) and len(raw_center) >= 2:
+        cx = __vuepyter_finite_float__(raw_center[0], default=None)
+        cy = __vuepyter_finite_float__(raw_center[1], default=None)
+        cz = __vuepyter_finite_float__(raw_center[2] if len(raw_center) > 2 else 0.0, default=None)
+        if cx is not None and cy is not None and cz is not None:
+            return [cx, cy, cz]
+        return None
 
     x = getattr(raw_center, "x", None)
     y = getattr(raw_center, "y", None)
-    z = getattr(raw_center, "z", None)
-    if x is not None and y is not None and z is not None:
-        try:
-            return [float(x), float(y), float(z)]
-        except Exception:
-            return [0.0, 0.0, 0.0]
+    if x is not None and y is not None:
+        z = getattr(raw_center, "z", 0.0)
+        cx = __vuepyter_finite_float__(x, default=None)
+        cy = __vuepyter_finite_float__(y, default=None)
+        cz = __vuepyter_finite_float__(z, default=None)
+        if cx is not None and cy is not None and cz is not None:
+            return [cx, cy, cz]
+        return None
 
-    return [0.0, 0.0, 0.0]
+    return None
 
 
 def __vuepyter_camera_payload__(camera_name, camera_obj):
     center = __vuepyter_parse_center__(getattr(camera_obj, "center", [0.0, 0.0, 0.0]))
-    height = float(getattr(camera_obj, "height", 480.0))
+    if center is None:
+        return None
+    height = __vuepyter_finite_float__(getattr(camera_obj, "height", 480.0), default=480.0)
     moving = bool(getattr(camera_obj, "_moving", False))
 
     state_fn = getattr(camera_obj, "state", None)
@@ -392,11 +476,10 @@ def __vuepyter_camera_payload__(camera_name, camera_obj):
         except Exception:
             state = None
         if isinstance(state, dict):
-            center = __vuepyter_parse_center__(state.get("center", center))
-            try:
-                height = float(state.get("height", height))
-            except Exception:
-                pass
+            state_center = __vuepyter_parse_center__(state.get("center", center))
+            if state_center is not None:
+                center = state_center
+            height = __vuepyter_finite_float__(state.get("height", height), default=height)
             moving = bool(state.get("moving", moving))
 
     return {
@@ -440,18 +523,27 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 
         if object_id is not None and object_id in node_ids_by_object:
             existing = node_ids_by_object[object_id]
+            existing_payload = node_payloads_by_id.get(existing)
+            if existing_payload is None:
+                return existing
             if node_index is not None:
-                node_payloads_by_id[existing]["node_index"] = int(node_index)
-            node_payloads_by_id[existing]["uid"] = str(object_id)
+                existing_payload["node_index"] = int(node_index)
+            # Keep canonical uid stable once assigned; edge endpoint aliases can be distinct objects.
+            if "uid" not in existing_payload and "node_index" not in existing_payload:
+                existing_payload["uid"] = str(object_id)
             return existing
 
-        if label in node_ids_by_label:
+        if node_index is None and label in node_ids_by_label:
             existing_id = node_ids_by_label[label]
+            existing_payload = node_payloads_by_id.get(existing_id)
+            if existing_payload is None:
+                return existing_id
             if object_id is not None:
                 node_ids_by_object[object_id] = existing_id
-                node_payloads_by_id[existing_id]["uid"] = str(object_id)
-            if node_index is not None:
-                node_payloads_by_id[existing_id]["node_index"] = int(node_index)
+                # For nodes sourced from graph.nodes (node_index present), avoid adopting uid from
+                # edge endpoint aliases that are different objects.
+                if "uid" not in existing_payload and "node_index" not in existing_payload:
+                    existing_payload["uid"] = str(object_id)
             return existing_id
 
         color, size, display_label = __vuepyter_parse_node_metadata__(raw)
@@ -481,7 +573,8 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 
         if object_id is not None:
             node_ids_by_object[object_id] = node_id
-        node_ids_by_label[label] = node_id
+        if label not in node_ids_by_label:
+            node_ids_by_label[label] = node_id
 
         return node_id
 
@@ -540,7 +633,9 @@ for global_name, global_value in list(globals().items()):
         continue
 
     if camera_payload is None and __vuepyter_is_camera_like__(global_value):
-        camera_payload = __vuepyter_camera_payload__(global_name, global_value)
+        candidate_camera_payload = __vuepyter_camera_payload__(global_name, global_value)
+        if candidate_camera_payload is not None:
+            camera_payload = candidate_camera_payload
 
     discovered = []
     __vuepyter_walk_for_graphs__(global_value, global_name, depth=2, seen=set(), out=discovered)
@@ -558,7 +653,7 @@ payload = {
     "camera": camera_payload,
 }
 
-json.dumps(payload)
+json.dumps(payload, allow_nan=False)
     `.trim()
 
     const app = createApp({
@@ -579,7 +674,12 @@ json.dumps(payload)
         }
 
         const leftPaneWidth = ref(
-          typeof window === 'undefined' ? 380 : Math.floor((window.innerWidth - 2 * 12) / 2),
+          typeof window === 'undefined'
+            ? 380
+            : Math.floor((
+              window.innerWidth
+              - 2 * VISUALIZER_CONSTANTS.viewport.pageHorizontalPadding
+            ) / 2),
         )
         const resizing = ref(false)
         const pyodideRef = ref(null)
@@ -602,28 +702,85 @@ json.dumps(payload)
 
         let lastPointerX = 0
         let lastPointerY = 0
-        let refreshInFlight = false
-        let refreshQueued = false
-        let refreshTimer = null
-        let cameraSyncTimer = null
-        let cameraSyncInFlight = false
-        let cameraSyncQueued = false
+        let isComponentAlive = true
         const graphRenderMemory = new Map()
-        let nodePosSyncTimer = null
-        let nodePosSyncInFlight = false
-        let nodePosSyncQueued = false
         const pendingNodePosUpdates = new Map()
+        let nodePosSyncInFlight = false
         let notebookCameraOverrideUntil = 0
 
-        let worldBounds = {
-          minX: -240,
-          maxX: 240,
-          minY: -160,
-          maxY: 160,
-        }
+        let worldBounds = { ...VISUALIZER_CONSTANTS.viewport.defaultWorldBounds }
+        let kernelTaskQueue = Promise.resolve()
 
         function clamp(value, min, max) {
           return Math.min(max, Math.max(min, value))
+        }
+
+        function createQueuedAsyncJob(executor) {
+          let timer = null
+          let inFlight = false
+          let queued = false
+
+          async function run() {
+            if (!isComponentAlive) {
+              return
+            }
+            if (inFlight) {
+              queued = true
+              return
+            }
+
+            inFlight = true
+            let outcome = null
+
+            try {
+              outcome = await executor()
+            } finally {
+              inFlight = false
+              if (!isComponentAlive) {
+                queued = false
+                if (timer !== null) {
+                  clearTimeout(timer)
+                  timer = null
+                }
+                return
+              }
+
+              const nextDelay = Number(outcome?.delayMs)
+              const followUpDelay = Number.isFinite(nextDelay) && nextDelay > 0 ? nextDelay : 0
+              const shouldRerun = queued || outcome?.requeue === true
+              queued = false
+
+              if (shouldRerun) {
+                queue(followUpDelay)
+              }
+            }
+          }
+
+          function queue(delayMs = 0) {
+            if (!isComponentAlive || timer !== null) {
+              return
+            }
+            const waitMs = Number(delayMs)
+            const normalizedDelay = Number.isFinite(waitMs) && waitMs > 0 ? waitMs : 0
+            timer = window.setTimeout(() => {
+              timer = null
+              void run()
+            }, normalizedDelay)
+          }
+
+          function cancel() {
+            queued = false
+            if (timer !== null) {
+              clearTimeout(timer)
+              timer = null
+            }
+          }
+
+          return {
+            run,
+            queue,
+            cancel,
+          }
         }
 
         function hashString(value) {
@@ -652,9 +809,12 @@ json.dumps(payload)
         }
 
         function calculateBounds() {
-          const totalWidth = window.innerWidth - 2 * 12
-          const minLeft = 280
-          const minRight = 420
+          const totalWidth = (
+            window.innerWidth
+            - 2 * VISUALIZER_CONSTANTS.viewport.pageHorizontalPadding
+          )
+          const minLeft = VISUALIZER_CONSTANTS.viewport.splitMinLeft
+          const minRight = VISUALIZER_CONSTANTS.viewport.splitMinRight
           const maxLeft = Math.max(minLeft, totalWidth - minRight)
           return { minLeft, maxLeft }
         }
@@ -664,7 +824,10 @@ json.dumps(payload)
             return leftPaneWidth.value
           }
           const { minLeft, maxLeft } = calculateBounds()
-          const totalWidth = window.innerWidth - 2 * 12
+          const totalWidth = (
+            window.innerWidth
+            - 2 * VISUALIZER_CONSTANTS.viewport.pageHorizontalPadding
+          )
           return clamp(totalWidth / 2, minLeft, maxLeft)
         }
 
@@ -676,6 +839,18 @@ json.dumps(payload)
               // Ignore proxy cleanup errors.
             }
           }
+        }
+
+        function runSerializedKernelTask(task) {
+          const run = async () => {
+            if (!isComponentAlive) {
+              return null
+            }
+            return task()
+          }
+          const next = kernelTaskQueue.then(run, run)
+          kernelTaskQueue = next.catch(() => null)
+          return next
         }
 
         function getCanvasMetrics() {
@@ -987,12 +1162,7 @@ json.dumps(payload)
         function rebuildWorldLayout(previousRenderByGraphName = null) {
           const graphs = graphGallery.value
           if (!Array.isArray(graphs) || graphs.length === 0) {
-            worldBounds = {
-              minX: -240,
-              maxX: 240,
-              minY: -160,
-              maxY: 160,
-            }
+            worldBounds = { ...VISUALIZER_CONSTANTS.viewport.defaultWorldBounds }
             return
           }
 
@@ -1057,8 +1227,14 @@ json.dumps(payload)
             }
 
             const local = layoutSingleGraph(graph)
-            const width = Math.max(220, local.bounds.maxX - local.bounds.minX + 68)
-            const height = Math.max(190, local.bounds.maxY - local.bounds.minY + 70)
+            const width = Math.max(
+              VISUALIZER_CONSTANTS.layout.minGraphWidth,
+              local.bounds.maxX - local.bounds.minX + 68,
+            )
+            const height = Math.max(
+              VISUALIZER_CONSTANTS.layout.minGraphHeight,
+              local.bounds.maxY - local.bounds.minY + 70,
+            )
 
             let offsetX
             let offsetY
@@ -1073,13 +1249,13 @@ json.dumps(payload)
               if (columnIndex >= maxColumns) {
                 columnIndex = 0
                 cursorX = 0
-                cursorY += rowHeight + 180
+                cursorY += rowHeight + VISUALIZER_CONSTANTS.layout.graphRowGap
                 rowHeight = 0
               }
 
-              offsetX = cursorX - local.bounds.minX + 34
-              offsetY = cursorY - local.bounds.minY + 44
-              cursorX += width + 190
+              offsetX = cursorX - local.bounds.minX + VISUALIZER_CONSTANTS.layout.graphOffsetX
+              offsetY = cursorY - local.bounds.minY + VISUALIZER_CONSTANTS.layout.graphOffsetY
+              cursorX += width + VISUALIZER_CONSTANTS.layout.graphColumnGap
               rowHeight = Math.max(rowHeight, height)
               columnIndex += 1
             }
@@ -1119,7 +1295,7 @@ json.dumps(payload)
               offsetX,
               offsetY,
               titleX: (local.bounds.minX + local.bounds.maxX) / 2 + offsetX,
-              titleY: local.bounds.minY + offsetY - 18,
+              titleY: local.bounds.minY + offsetY - VISUALIZER_CONSTANTS.layout.titleOffsetY,
               nodes: worldNodes,
               edges: worldEdges,
             }
@@ -1137,12 +1313,16 @@ json.dumps(payload)
             })
 
             for (const node of worldNodes) {
-              const rightPad = node.displayLabel ? 66 : 14
-              const topPad = node.displayLabel ? 48 : 14
-              minX = Math.min(minX, node.x - node.radius - 12)
+              const rightPad = node.displayLabel
+                ? VISUALIZER_CONSTANTS.layout.nodeLabelRightPadding
+                : VISUALIZER_CONSTANTS.layout.nodeNoLabelPadding
+              const topPad = node.displayLabel
+                ? VISUALIZER_CONSTANTS.layout.nodeLabelTopPadding
+                : VISUALIZER_CONSTANTS.layout.nodeNoLabelPadding
+              minX = Math.min(minX, node.x - node.radius - VISUALIZER_CONSTANTS.layout.nodeBoundsPadding)
               maxX = Math.max(maxX, node.x + node.radius + rightPad)
               minY = Math.min(minY, node.y - node.radius - topPad)
-              maxY = Math.max(maxY, node.y + node.radius + 18)
+              maxY = Math.max(maxY, node.y + node.radius + VISUALIZER_CONSTANTS.layout.nodeBottomPadding)
             }
           }
 
@@ -1169,9 +1349,12 @@ json.dumps(payload)
           const worldHeight = Math.max(1, worldBounds.maxY - worldBounds.minY)
 
           const targetScale = clamp(
-            Math.min((width - 72) / worldWidth, (height - 72) / worldHeight),
-            0.14,
-            3.2,
+            Math.min(
+              (width - VISUALIZER_CONSTANTS.viewport.fitPadding) / worldWidth,
+              (height - VISUALIZER_CONSTANTS.viewport.fitPadding) / worldHeight,
+            ),
+            VISUALIZER_CONSTANTS.viewport.fitScaleMin,
+            VISUALIZER_CONSTANTS.viewport.fitScaleMax,
           )
 
           const centerX = (worldBounds.minX + worldBounds.maxX) / 2
@@ -1214,8 +1397,16 @@ json.dumps(payload)
 
           const { width, height } = metrics
           const [centerX, centerY] = cameraState.center
-          const desiredHeight = clamp(Math.abs(cameraState.height), 60, 16000)
-          const targetScale = clamp(height / desiredHeight, 0.04, 8)
+          const desiredHeight = clamp(
+            Math.abs(cameraState.height),
+            VISUALIZER_CONSTANTS.viewport.notebookCameraHeightMin,
+            VISUALIZER_CONSTANTS.viewport.notebookCameraHeightMax,
+          )
+          const targetScale = clamp(
+            height / desiredHeight,
+            VISUALIZER_CONSTANTS.viewport.notebookCameraScaleMin,
+            VISUALIZER_CONSTANTS.viewport.notebookCameraScaleMax,
+          )
 
           cameraScale.value = targetScale
           cameraOffsetX.value = width / 2 - centerX * targetScale
@@ -1249,24 +1440,19 @@ json.dumps(payload)
           }
         }
 
-        async function syncNotebookCameraState() {
+        const cameraSyncJob = createQueuedAsyncJob(async () => {
           if (!cameraControlledByNotebook.value || !notebookCameraName.value) {
-            return
-          }
-
-          if (cameraSyncInFlight) {
-            cameraSyncQueued = true
-            return
+            return null
           }
 
           const instance = pyodideRef.value
           if (!instance || typeof instance.runPythonAsync !== 'function') {
-            return
+            return null
           }
 
           const next = getViewportCameraState()
           if (!next) {
-            return
+            return null
           }
 
           const payload = JSON.stringify({
@@ -1275,46 +1461,91 @@ json.dumps(payload)
             height: next.height,
           })
 
-          cameraSyncInFlight = true
           try {
-            await instance.runPythonAsync(`
+            await runSerializedKernelTask(() => instance.runPythonAsync(`
 import json
+import math
+import time
+
+
+def __vuepyter_finite_float__(value):
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
 __vuepyter_camera_patch__ = json.loads(${JSON.stringify(payload)})
 __vuepyter_camera_obj__ = globals().get(__vuepyter_camera_patch__.get("name"))
 if __vuepyter_camera_obj__ is not None:
-    __center = __vuepyter_camera_patch__.get("center", [0.0, 0.0, 0.0])
-    __height = __vuepyter_camera_patch__.get("height")
-    try:
-        __vuepyter_camera_obj__.center = (float(__center[0]), float(__center[1]), float(__center[2]))
-    except Exception:
-        pass
-    try:
-        __vuepyter_camera_obj__.height = float(__height)
-    except Exception:
-        pass
-`)
+    __raw_center = __vuepyter_camera_patch__.get("center", [0.0, 0.0, 0.0])
+    if not isinstance(__raw_center, (list, tuple)):
+        __raw_center = [0.0, 0.0, 0.0]
+    __cx = __vuepyter_finite_float__(__raw_center[0] if len(__raw_center) > 0 else 0.0)
+    __cy = __vuepyter_finite_float__(__raw_center[1] if len(__raw_center) > 1 else 0.0)
+    __cz = __vuepyter_finite_float__(__raw_center[2] if len(__raw_center) > 2 else 0.0)
+    __center_tuple = None
+    if __cx is not None and __cy is not None and __cz is not None:
+        __center_tuple = (__cx, __cy, __cz)
+        try:
+            __vuepyter_camera_obj__.center = __center_tuple
+        except Exception:
+            pass
+
+    __height = __vuepyter_finite_float__(__vuepyter_camera_patch__.get("height"))
+    if __height is not None:
+        try:
+            __vuepyter_camera_obj__.height = __height
+        except Exception:
+            pass
+
+    # If the camera exposes animation internals, snap them to the patched state so
+    # local interactions do not get overridden by stale in-flight animation frames.
+    if __center_tuple is not None:
+        for __center_attr in ("_start_center", "_target_center"):
+            if hasattr(__vuepyter_camera_obj__, __center_attr):
+                try:
+                    setattr(__vuepyter_camera_obj__, __center_attr, __center_tuple)
+                except Exception:
+                    pass
+    if __height is not None:
+        for __height_attr in ("_start_height", "_target_height"):
+            if hasattr(__vuepyter_camera_obj__, __height_attr):
+                try:
+                    setattr(__vuepyter_camera_obj__, __height_attr, __height)
+                except Exception:
+                    pass
+
+    if hasattr(__vuepyter_camera_obj__, "_start_time"):
+        try:
+            setattr(__vuepyter_camera_obj__, "_start_time", time.perf_counter())
+        except Exception:
+            pass
+    if hasattr(__vuepyter_camera_obj__, "_duration"):
+        try:
+            setattr(__vuepyter_camera_obj__, "_duration", 0.0)
+        except Exception:
+            pass
+    if hasattr(__vuepyter_camera_obj__, "_moving"):
+        try:
+            setattr(__vuepyter_camera_obj__, "_moving", False)
+        except Exception:
+            pass
+`))
           } catch (error) {
             console.error('Failed to sync camera to notebook', error)
-          } finally {
-            cameraSyncInFlight = false
-            if (cameraSyncQueued) {
-              cameraSyncQueued = false
-              queueNotebookCameraSync()
-            }
           }
-        }
+          return null
+        })
 
         function queueNotebookCameraSync(delayMs = 0) {
           if (!cameraControlledByNotebook.value || !notebookCameraName.value) {
             return
           }
-          if (cameraSyncTimer !== null) {
-            return
-          }
-          cameraSyncTimer = window.setTimeout(() => {
-            cameraSyncTimer = null
-            void syncNotebookCameraState()
-          }, delayMs)
+          cameraSyncJob.queue(delayMs)
         }
 
         function pointerWorldPosition(event) {
@@ -1339,7 +1570,10 @@ if __vuepyter_camera_obj__ is not None:
             return null
           }
 
-          const hitPadding = 9 / Math.max(0.2, cameraScale.value)
+          const hitPadding = (
+            VISUALIZER_CONSTANTS.zoom.nodeHitPadding
+            / Math.max(VISUALIZER_CONSTANTS.zoom.minHitScale, cameraScale.value)
+          )
 
           for (let graphIndex = graphs.length - 1; graphIndex >= 0; graphIndex -= 1) {
             const graph = graphs[graphIndex]
@@ -1468,35 +1702,413 @@ if __vuepyter_camera_obj__ is not None:
           }
         }
 
+        function pruneStalePendingNodePosUpdates(now = Date.now()) {
+          for (const [key, pending] of pendingNodePosUpdates.entries()) {
+            if (!pending || typeof pending !== 'object') {
+              pendingNodePosUpdates.delete(key)
+              continue
+            }
+
+            const attempts = Number(pending.attempts)
+            const expiresAt = Number(pending.expiresAt)
+            const lastAttemptAt = Number(pending.lastAttemptAt)
+            const hasAttemptedSync = Number.isFinite(lastAttemptAt) && lastAttemptAt > 0
+            if (
+              (Number.isFinite(attempts)
+                && attempts >= VISUALIZER_CONSTANTS.sync.pendingNodeUpdateMaxAttempts)
+              || (hasAttemptedSync && Number.isFinite(expiresAt) && expiresAt <= now)
+            ) {
+              pendingNodePosUpdates.delete(key)
+            }
+          }
+        }
+
+        function positionsAlmostEqual(a, b, epsilon = VISUALIZER_CONSTANTS.sync.pendingNodePosEqualityEpsilon) {
+          if (!Array.isArray(a) || !Array.isArray(b) || a.length < 2 || b.length < 2) {
+            return false
+          }
+          const ax = Number(a[0])
+          const ay = Number(a[1])
+          const bx = Number(b[0])
+          const by = Number(b[1])
+          if (!Number.isFinite(ax) || !Number.isFinite(ay) || !Number.isFinite(bx) || !Number.isFinite(by)) {
+            return false
+          }
+          return Math.abs(ax - bx) <= epsilon && Math.abs(ay - by) <= epsilon
+        }
+
         async function syncNotebookNodePositions() {
           if (nodePosSyncInFlight) {
-            nodePosSyncQueued = true
-            return
+            return pendingNodePosUpdates.size > 0
+              ? {
+                requeue: true,
+                delayMs: VISUALIZER_CONSTANTS.sync.nodeDragSyncMs,
+              }
+              : null
           }
-
-          if (pendingNodePosUpdates.size === 0) {
-            return
-          }
-
-          const instance = pyodideRef.value
-          if (!instance || typeof instance.runPythonAsync !== 'function') {
-            queueNodePosSyncFlush(180)
-            return
-          }
-
-          const updateEntries = Array.from(pendingNodePosUpdates.entries())
-          const updates = updateEntries.map(([key, value]) => ({
-            ...value,
-            __k: key,
-          }))
-          const payload = JSON.stringify({ updates })
-
           nodePosSyncInFlight = true
-          let syncSucceeded = false
-          let appliedKeys = null
           try {
-            const rawApplied = await instance.runPythonAsync(`
+            pruneStalePendingNodePosUpdates()
+            if (pendingNodePosUpdates.size === 0) {
+              return null
+            }
+
+            const instance = pyodideRef.value
+            if (!instance || typeof instance.runPythonAsync !== 'function') {
+              return {
+                requeue: pendingNodePosUpdates.size > 0,
+                delayMs: VISUALIZER_CONSTANTS.sync.nodeSyncNoKernelRetryMs,
+              }
+            }
+
+            const updateEntries = Array.from(pendingNodePosUpdates.entries())
+            if (updateEntries.length === 0) {
+              return null
+            }
+
+            const now = Date.now()
+            for (const [, value] of updateEntries) {
+              if (!value || typeof value !== 'object') {
+                continue
+              }
+              if (!Number.isFinite(Number(value.expiresAt))) {
+                value.expiresAt = now + VISUALIZER_CONSTANTS.sync.pendingNodeUpdateMaxAgeMs
+              }
+              const previousAttempts = Number(value.attempts)
+              value.attempts = Number.isFinite(previousAttempts) ? previousAttempts + 1 : 1
+              value.lastAttemptAt = now
+            }
+
+            const updates = updateEntries.map(([key, value]) => ({
+              ...value,
+              __k: key,
+            }))
+            const payload = JSON.stringify({ updates })
+
+            let syncSucceeded = false
+            let appliedKeys = null
+            try {
+              const rawApplied = await runSerializedKernelTask(() => instance.runPythonAsync(`
 import json
+import math
+import ast
+
+
+def __vuepyter_finite_float__(value):
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def __vuepyter_is_graph_like__(value):
+    if value is None or isinstance(value, type):
+        return False
+    try:
+        __nodes = getattr(value, "nodes")
+        __edges = getattr(value, "edges")
+        iter(__nodes)
+        iter(__edges)
+    except Exception:
+        return False
+    return True
+
+
+def __vuepyter_iter_items__(value, limit=512):
+    if value is None:
+        return []
+
+    if isinstance(value, dict):
+        __source = value.values()
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        __source = value
+    else:
+        try:
+            __source = value
+            iter(__source)
+        except Exception:
+            return []
+
+    __out = []
+    for __index, __item in enumerate(__source):
+        if __index >= limit:
+            break
+        __out.append(__item)
+    return __out
+
+
+def __vuepyter_edge_endpoints__(raw_edge):
+    for __left_name, __right_name in (
+        ("frm", "to"),
+        ("from_node", "to_node"),
+        ("source", "target"),
+        ("u", "v"),
+        ("start", "end"),
+    ):
+        try:
+            __left = getattr(raw_edge, __left_name)
+            __right = getattr(raw_edge, __right_name)
+            return __left, __right
+        except Exception:
+            pass
+
+    try:
+        __left = getattr(raw_edge, "from")
+        __right = getattr(raw_edge, "to")
+        return __left, __right
+    except Exception:
+        pass
+
+    if isinstance(raw_edge, (list, tuple)) and len(raw_edge) >= 2:
+        return raw_edge[0], raw_edge[1]
+
+    return None, None
+
+
+def __vuepyter_iter_nested_values__(roots, limit=8192):
+    __stack = list(roots)
+    __seen = set()
+    __visited = 0
+    while __stack and __visited < limit:
+        __value = __stack.pop()
+        try:
+            __value_id = id(__value)
+        except Exception:
+            continue
+        if __value_id in __seen:
+            continue
+        __seen.add(__value_id)
+        __visited += 1
+        yield __value
+
+        if isinstance(__value, dict):
+            try:
+                __children = list(__value.values())[:96]
+            except Exception:
+                __children = []
+            for __child in reversed(__children):
+                __stack.append(__child)
+        elif isinstance(__value, (list, tuple, set, frozenset)):
+            try:
+                __children = list(__value)[:96]
+            except Exception:
+                __children = []
+            for __child in reversed(__children):
+                __stack.append(__child)
+        else:
+            try:
+                __dict_values = list(vars(__value).values())[:48]
+            except Exception:
+                __dict_values = []
+            for __child in reversed(__dict_values):
+                __stack.append(__child)
+
+
+def __vuepyter_find_graph_by_uid__(target_uid):
+    if target_uid is None:
+        return None
+    for __candidate in __vuepyter_iter_nested_values__(list(globals().values())):
+        try:
+            if id(__candidate) == target_uid and __vuepyter_is_graph_like__(__candidate):
+                return __candidate
+        except Exception:
+            pass
+    return None
+
+
+def __vuepyter_resolve_graph_path__(raw_path):
+    if not isinstance(raw_path, str):
+        return None
+    __path = raw_path.strip()
+    if not __path:
+        return None
+
+    if __path in globals():
+        __value = globals().get(__path)
+        if __vuepyter_is_graph_like__(__value):
+            return __value
+
+    __cursor = 0
+    __length = len(__path)
+    while __cursor < __length and __path[__cursor] not in ".[":
+        __cursor += 1
+    __root = __path[:__cursor].strip()
+    if not __root:
+        return None
+    __value = globals().get(__root)
+    if __value is None:
+        return None
+
+    while __cursor < __length:
+        __token = __path[__cursor]
+        if __token == ".":
+            __cursor += 1
+            __start = __cursor
+            while __cursor < __length and __path[__cursor] not in ".[":
+                __cursor += 1
+            __attr = __path[__start:__cursor].strip()
+            if not __attr:
+                return None
+            if isinstance(__value, dict) and __attr in __value:
+                try:
+                    __value = __value.get(__attr)
+                except Exception:
+                    return None
+                continue
+            try:
+                __value = getattr(__value, __attr)
+            except Exception:
+                return None
+            continue
+
+        if __token == "[":
+            __cursor += 1
+            __start = __cursor
+            __depth = 1
+            __quote = None
+            __escaped = False
+            while __cursor < __length:
+                __char = __path[__cursor]
+                if __quote is not None:
+                    if __escaped:
+                        __escaped = False
+                    elif __char == "\\\\":
+                        __escaped = True
+                    elif __char == __quote:
+                        __quote = None
+                else:
+                    if __char in ("'", '"'):
+                        __quote = __char
+                    elif __char == "[":
+                        __depth += 1
+                    elif __char == "]":
+                        __depth -= 1
+                        if __depth == 0:
+                            break
+                __cursor += 1
+            if __cursor >= __length or __path[__cursor] != "]":
+                return None
+
+            __segment = __path[__start:__cursor].strip()
+            __cursor += 1
+
+            __key = None
+            try:
+                __key = ast.literal_eval(__segment)
+            except Exception:
+                if __segment == "True":
+                    __key = True
+                elif __segment == "False":
+                    __key = False
+                elif __segment == "None":
+                    __key = None
+                else:
+                    try:
+                        __key = int(__segment)
+                    except Exception:
+                        try:
+                            __key = float(__segment)
+                        except Exception:
+                            __key = __segment
+
+            if isinstance(__value, dict):
+                try:
+                    if __key in __value:
+                        __value = __value.get(__key)
+                    else:
+                        return None
+                except Exception:
+                    return None
+            elif isinstance(__value, (list, tuple)):
+                try:
+                    __index = int(__key)
+                except Exception:
+                    return None
+                if __index < 0 or __index >= len(__value):
+                    return None
+                __value = __value[__index]
+            elif isinstance(__value, (set, frozenset)):
+                try:
+                    __index = int(__key)
+                except Exception:
+                    return None
+                try:
+                    __values = list(__value)
+                except Exception:
+                    return None
+                if __index < 0 or __index >= len(__values):
+                    return None
+                __value = __values[__index]
+            else:
+                return None
+            continue
+
+        return None
+
+    if __vuepyter_is_graph_like__(__value):
+        return __value
+    return None
+
+
+def __vuepyter_graph_nodes_for_patch__(graph_obj):
+    __raw_nodes = __vuepyter_iter_items__(getattr(graph_obj, "nodes", []), limit=512)
+    __raw_edges = __vuepyter_iter_items__(getattr(graph_obj, "edges", []), limit=1024)
+
+    __nodes = []
+    __node_slots_by_object = {}
+    __node_slots_by_label = {}
+
+    def __ensure_node(raw, node_index=None):
+        if raw is None:
+            return None
+
+        __object_id = None
+        __label = None
+
+        if hasattr(raw, "label"):
+            try:
+                __object_id = id(raw)
+            except Exception:
+                __object_id = None
+            try:
+                __label = str(getattr(raw, "label"))
+            except Exception:
+                __label = str(raw)
+        else:
+            __label = str(raw)
+
+        if __object_id is not None and __object_id in __node_slots_by_object:
+            return __node_slots_by_object[__object_id]
+
+        if node_index is None and __label in __node_slots_by_label:
+            __existing_slot = __node_slots_by_label[__label]
+            if __object_id is not None:
+                __node_slots_by_object[__object_id] = __existing_slot
+            return __existing_slot
+
+        __slot = len(__nodes)
+        __nodes.append(raw)
+
+        if __object_id is not None:
+            __node_slots_by_object[__object_id] = __slot
+        if __label not in __node_slots_by_label:
+            __node_slots_by_label[__label] = __slot
+        return __slot
+
+    for __raw_node_index, __raw_node in enumerate(__raw_nodes):
+        __ensure_node(__raw_node, node_index=__raw_node_index)
+
+    for __raw_edge in __raw_edges:
+        __left, __right = __vuepyter_edge_endpoints__(__raw_edge)
+        __ensure_node(__left, node_index=None)
+        __ensure_node(__right, node_index=None)
+
+    return __nodes
+
+
 __vuepyter_node_pos_patch__ = json.loads(${JSON.stringify(payload)})
 __vuepyter_applied_keys__ = []
 for __item in __vuepyter_node_pos_patch__.get("updates", []):
@@ -1509,31 +2121,15 @@ for __item in __vuepyter_node_pos_patch__.get("updates", []):
             __graph_uid = int(str(__graph_uid_raw))
         except Exception:
             __graph_uid = None
-        if __graph_uid is not None:
-            for __global_value in list(globals().values()):
-                try:
-                    if id(__global_value) == __graph_uid:
-                        __graph_obj = __global_value
-                        break
-                except Exception:
-                    pass
+        __graph_obj = __vuepyter_find_graph_by_uid__(__graph_uid)
 
     __graph_name = __item.get("graph")
     if __graph_obj is None and isinstance(__graph_name, str) and __graph_name:
-        __graph_obj = globals().get(__graph_name)
-        if __graph_obj is None:
-            try:
-                __graph_obj = eval(__graph_name, globals(), globals())
-            except Exception:
-                __graph_obj = None
+        __graph_obj = __vuepyter_resolve_graph_path__(__graph_name)
     if __graph_obj is None:
         continue
-    __nodes = getattr(__graph_obj, "nodes", None)
-    if __nodes is None:
-        continue
-    try:
-        __nodes = list(__nodes)
-    except Exception:
+    __nodes = __vuepyter_graph_nodes_for_patch__(__graph_obj)
+    if not isinstance(__nodes, list) or len(__nodes) == 0:
         continue
 
     __target = None
@@ -1553,16 +2149,33 @@ for __item in __vuepyter_node_pos_patch__.get("updates", []):
                     pass
 
     __node_index = __item.get("node_index")
+    __node_id = __item.get("node_id")
     if __target is None:
         try:
             __index = int(__node_index)
         except Exception:
             __index = -1
         if 0 <= __index < len(__nodes):
-            __target = __nodes[__index]
+            __candidate = __nodes[__index]
+            if __node_id is None:
+                __target = __candidate
+            else:
+                try:
+                    __candidate_id = getattr(__candidate, "id", None)
+                except Exception:
+                    __candidate_id = None
+                if __candidate_id is None or str(__candidate_id) == str(__node_id):
+                    __target = __candidate
+
+    if __target is None and isinstance(__node_id, str) and __node_id.startswith("n"):
+        try:
+            __generated_index = int(__node_id[1:])
+        except Exception:
+            __generated_index = -1
+        if 0 <= __generated_index < len(__nodes):
+            __target = __nodes[__generated_index]
 
     __node_label = __item.get("node_label")
-    __node_id = __item.get("node_id")
     if __target is None and __node_id is not None:
         for __candidate in __nodes:
             try:
@@ -1589,27 +2202,42 @@ for __item in __vuepyter_node_pos_patch__.get("updates", []):
     __pos = __item.get("pos")
     if not isinstance(__pos, (list, tuple)) or len(__pos) < 2:
         continue
-    try:
-        __target.pos = (float(__pos[0]), float(__pos[1]))
-        __k = __item.get("__k")
-        if __k is not None:
-            __vuepyter_applied_keys__.append(str(__k))
-    except Exception:
-        pass
+    __px = __vuepyter_finite_float__(__pos[0])
+    __py = __vuepyter_finite_float__(__pos[1])
+    if __px is None or __py is None:
+        continue
+    __assigned = False
+    for __candidate_pos in ((__px, __py), [__px, __py]):
+        try:
+            __target.pos = __candidate_pos
+            __assigned = True
+            break
+        except Exception:
+            pass
+    if not __assigned:
+        continue
+    __k = __item.get("__k")
+    if __k is not None:
+        __vuepyter_applied_keys__.append(str(__k))
 json.dumps({"applied": __vuepyter_applied_keys__})
-`)
-            let parsed = null
-            try {
-              parsed = JSON.parse(typeof rawApplied === 'string' ? rawApplied : String(rawApplied))
-            } catch {
-              parsed = null
+`))
+              let parsed = null
+              try {
+                parsed = JSON.parse(typeof rawApplied === 'string' ? rawApplied : String(rawApplied))
+              } catch {
+                parsed = null
+              }
+              const applied = Array.isArray(parsed?.applied) ? parsed.applied : []
+              appliedKeys = new Set(applied.map((entry) => String(entry)))
+              syncSucceeded = appliedKeys.size > 0
+            } catch (error) {
+              console.error('Failed to sync node positions to notebook', error)
             }
-            const applied = Array.isArray(parsed?.applied) ? parsed.applied : []
-            appliedKeys = new Set(applied.map((entry) => String(entry)))
-            syncSucceeded = appliedKeys.size > 0
-          } catch (error) {
-            console.error('Failed to sync node positions to notebook', error)
-          } finally {
+
+            if (!isComponentAlive) {
+              return null
+            }
+
             if (appliedKeys && appliedKeys.size > 0) {
               for (const [key] of updateEntries) {
                 if (appliedKeys.has(key)) {
@@ -1617,25 +2245,34 @@ json.dumps({"applied": __vuepyter_applied_keys__})
                 }
               }
             }
-            nodePosSyncInFlight = false
-            if (nodePosSyncQueued || pendingNodePosUpdates.size > 0) {
-              nodePosSyncQueued = false
-              queueNodePosSyncFlush(syncSucceeded ? 0 : 140)
+
+            pruneStalePendingNodePosUpdates()
+
+            if (pendingNodePosUpdates.size > 0) {
+              return {
+                requeue: true,
+                delayMs: syncSucceeded ? 0 : VISUALIZER_CONSTANTS.sync.nodeSyncRetryMs,
+              }
             }
+
+            return null
+          } finally {
+            nodePosSyncInFlight = false
           }
         }
+
+        const nodePosSyncJob = createQueuedAsyncJob(syncNotebookNodePositions)
 
         function queueNodePosSyncFlush(delayMs = 0) {
-          if (nodePosSyncTimer !== null) {
+          const waitMs = Number(delayMs)
+          if (Number.isFinite(waitMs) && waitMs <= 0) {
+            void nodePosSyncJob.run()
             return
           }
-          nodePosSyncTimer = window.setTimeout(() => {
-            nodePosSyncTimer = null
-            void syncNotebookNodePositions()
-          }, delayMs)
+          nodePosSyncJob.queue(delayMs)
         }
 
-        function queueNodePosSync(update, delayMs = 22) {
+        function queueNodePosSync(update, delayMs = VISUALIZER_CONSTANTS.sync.nodeDragSyncMs) {
           if (!update || typeof update !== 'object') {
             return
           }
@@ -1652,7 +2289,13 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           if (!Array.isArray(update.pos) || update.pos.length < 2) {
             return
           }
+          const px = Number(update.pos[0])
+          const py = Number(update.pos[1])
+          if (!Number.isFinite(px) || !Number.isFinite(py)) {
+            return
+          }
           const key = `${graphUid || graphName}::${nodeUid || nodeId}`
+          const now = Date.now()
           pendingNodePosUpdates.set(key, {
             graph_uid: graphUid,
             graph: graphName,
@@ -1660,8 +2303,17 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             node_id: nodeId,
             node_index: update.nodeIndex,
             node_label: update.nodeLabel,
-            pos: update.pos,
+            pos: [px, py],
+            attempts: 0,
+            lastAttemptAt: 0,
+            localOverrideUntil: now + VISUALIZER_CONSTANTS.sync.pendingNodeLocalOverrideMs,
+            expiresAt: null,
           })
+          const waitMs = Number(delayMs)
+          if (Number.isFinite(waitMs) && waitMs <= 0) {
+            void nodePosSyncJob.run()
+            return
+          }
           queueNodePosSyncFlush(delayMs)
         }
 
@@ -1670,7 +2322,8 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             return
           }
 
-          for (const pending of pendingNodePosUpdates.values()) {
+          const now = Date.now()
+          for (const [key, pending] of pendingNodePosUpdates.entries()) {
             if (!pending || typeof pending !== 'object') {
               continue
             }
@@ -1697,7 +2350,16 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               continue
             }
 
-            const pendingNodeIndex = Number(pending.node_index)
+            const pendingNodeIndexRaw = pending.node_index
+            const pendingNodeIndex = (
+              Number.isInteger(pendingNodeIndexRaw)
+                ? pendingNodeIndexRaw
+                : (typeof pendingNodeIndexRaw === 'string'
+                  && pendingNodeIndexRaw.trim() !== ''
+                  && Number.isInteger(Number(pendingNodeIndexRaw))
+                  ? Number(pendingNodeIndexRaw)
+                  : null)
+            )
             const pendingNodeUid = pending.node_uid == null ? '' : String(pending.node_uid)
             const pendingNodeId = pending.node_id == null ? '' : String(pending.node_id)
             const pendingNodeLabel = pending.node_label == null ? '' : String(pending.node_label)
@@ -1706,11 +2368,13 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             if (pendingNodeUid) {
               node = graph.nodes.find((candidate) => candidate?.uid === pendingNodeUid) || null
             }
-            if (Number.isInteger(pendingNodeIndex)
+            if (!node && Number.isInteger(pendingNodeIndex)
               && pendingNodeIndex >= 0
               && pendingNodeIndex < graph.nodes.length) {
-              if (!node) {
-                node = graph.nodes[pendingNodeIndex]
+              const byIndex = graph.nodes[pendingNodeIndex]
+              const byIndexId = byIndex?.id == null ? '' : String(byIndex.id)
+              if (!pendingNodeId || (byIndexId && byIndexId === pendingNodeId)) {
+                node = byIndex
               }
             }
             if (!node && pendingNodeId) {
@@ -1723,6 +2387,29 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               continue
             }
 
+            const kernelPos = (
+              Array.isArray(node.pos)
+              && node.pos.length >= 2
+              && Number.isFinite(Number(node.pos[0]))
+              && Number.isFinite(Number(node.pos[1]))
+            )
+              ? [Number(node.pos[0]), Number(node.pos[1])]
+              : null
+            const kernelHasExplicitPos = node.posProvided === true && kernelPos !== null
+            const localOverrideUntil = Number(pending.localOverrideUntil)
+            const localOverrideActive = Number.isFinite(localOverrideUntil) && now <= localOverrideUntil
+
+            if (kernelHasExplicitPos && positionsAlmostEqual(kernelPos, [px, py])) {
+              pendingNodePosUpdates.delete(key)
+              continue
+            }
+
+            if (kernelHasExplicitPos && !localOverrideActive) {
+              // Let kernel state render once local override expires, but keep the pending
+              // item so unsynced positions still get another chance to persist.
+              continue
+            }
+
             node.pos = [px, py]
             node.posProvided = true
           }
@@ -1731,9 +2418,10 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         function queueInitialNodePositionSync() {
           const graphs = graphGallery.value
           if (!Array.isArray(graphs) || graphs.length === 0) {
-            return
+            return 0
           }
 
+          let queuedCount = 0
           for (const graph of graphs) {
             const renderNodes = Array.isArray(graph?.render?.nodes) ? graph.render.nodes : []
             if (renderNodes.length === 0) {
@@ -1784,7 +2472,33 @@ json.dumps({"applied": __vuepyter_applied_keys__})
                 nodeLabel: node.label,
                 pos,
               }, 0)
+              queuedCount += 1
             }
+          }
+          return queuedCount
+        }
+
+        async function flushPendingNodePosSync(maxPasses = 3) {
+          let followUpDelayMs = 0
+          for (let pass = 0; pass < maxPasses; pass += 1) {
+            if (pendingNodePosUpdates.size === 0) {
+              return
+            }
+            const outcome = await syncNotebookNodePositions()
+            if (pendingNodePosUpdates.size === 0) {
+              return
+            }
+            if (!outcome || outcome.requeue !== true) {
+              return
+            }
+            const delayMs = Number(outcome.delayMs)
+            if (Number.isFinite(delayMs) && delayMs > 0) {
+              followUpDelayMs = delayMs
+              break
+            }
+          }
+          if (pendingNodePosUpdates.size > 0) {
+            queueNodePosSyncFlush(followUpDelayMs)
           }
         }
 
@@ -1812,6 +2526,10 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         }
 
         function drawGallery() {
+          if (!isComponentAlive) {
+            return
+          }
+
           const metrics = getCanvasMetrics()
           if (!metrics) {
             return
@@ -1910,7 +2628,28 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           ctx.restore()
         }
 
-        function applySnapshot(payload) {
+        function pruneGraphRenderMemory(graphs) {
+          const activeGraphKeys = new Set()
+          if (Array.isArray(graphs)) {
+            for (const graph of graphs) {
+              const graphKey = graphStableKey(graph)
+              if (graphKey) {
+                activeGraphKeys.add(graphKey)
+              }
+            }
+          }
+          for (const graphKey of graphRenderMemory.keys()) {
+            if (!activeGraphKeys.has(graphKey)) {
+              graphRenderMemory.delete(graphKey)
+            }
+          }
+        }
+
+        async function applySnapshot(payload) {
+          if (!isComponentAlive) {
+            return
+          }
+
           const previousRenderByGraphName = new Map(graphRenderMemory)
           for (const graph of graphGallery.value) {
             if (graph && graph.render && typeof graph.name === 'string' && graph.name) {
@@ -1920,8 +2659,10 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
           const previousCount = graphGallery.value.length
           graphGallery.value = normalizeGraphPayload(payload)
+          pruneStalePendingNodePosUpdates()
           applyPendingNodePosToGraphs(graphGallery.value)
           rebuildWorldLayout(previousRenderByGraphName)
+          pruneGraphRenderMemory(graphGallery.value)
 
           if (activeNodeDrag.value
             && Number.isFinite(activeNodeDrag.value.worldX)
@@ -1929,7 +2670,10 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             updateNodePositionInRender(activeNodeDrag.value)
           }
 
-          queueInitialNodePositionSync()
+          const queuedInitialNodePositions = queueInitialNodePositionSync()
+          if (queuedInitialNodePositions > 0) {
+            await flushPendingNodePosSync(3)
+          }
 
           if (previousCount === 0 && graphGallery.value.length > 0) {
             hasMovedCamera.value = false
@@ -1951,7 +2695,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               applyNotebookCamera(notebookCamera)
             }
             if (notebookCamera.moving) {
-              queueGraphRefresh(16)
+              queueGraphRefresh(VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs)
             }
           } else {
             notebookCameraName.value = ''
@@ -1967,43 +2711,38 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         async function refreshGraphs() {
           const instance = pyodideRef.value
           if (!instance || typeof instance.runPythonAsync !== 'function') {
-            applySnapshot({ graphs: [] })
-            return
+            await applySnapshot({ graphs: [] })
+            return null
           }
 
-          if (refreshInFlight) {
-            refreshQueued = true
-            return
-          }
-
-          refreshInFlight = true
           let rawResult = null
 
           try {
-            rawResult = await instance.runPythonAsync(GRAPH_SNAPSHOT_SOURCE)
+            rawResult = await runSerializedKernelTask(() => instance.runPythonAsync(GRAPH_SNAPSHOT_SOURCE))
+            if (!isComponentAlive) {
+              return null
+            }
             const text = typeof rawResult === 'string' ? rawResult : String(rawResult)
             const payload = JSON.parse(text)
-            applySnapshot(payload)
+            await applySnapshot(payload)
           } catch (error) {
             console.error(error)
           } finally {
             destroyPyProxy(rawResult)
-            refreshInFlight = false
-            if (refreshQueued) {
-              refreshQueued = false
-              void refreshGraphs()
-            }
           }
+
+          return null
         }
 
+        const graphRefreshJob = createQueuedAsyncJob(refreshGraphs)
+
         function queueGraphRefresh(delayMs = 0) {
-          if (refreshTimer !== null) {
+          const waitMs = Number(delayMs)
+          if (Number.isFinite(waitMs) && waitMs <= 0) {
+            void graphRefreshJob.run()
             return
           }
-          refreshTimer = window.setTimeout(() => {
-            refreshTimer = null
-            void refreshGraphs()
-          }, delayMs)
+          graphRefreshJob.queue(delayMs)
         }
 
         function onPointerMove(event) {
@@ -2012,7 +2751,11 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           }
 
           const { minLeft, maxLeft } = calculateBounds()
-          leftPaneWidth.value = clamp(event.clientX - 12, minLeft, maxLeft)
+          leftPaneWidth.value = clamp(
+            event.clientX - VISUALIZER_CONSTANTS.viewport.pageHorizontalPadding,
+            minLeft,
+            maxLeft,
+          )
           drawGallery()
         }
 
@@ -2161,7 +2904,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
                 if (!source.trim()) {
                   continue
                 }
-                await instance.runPythonAsync(source)
+                await runSerializedKernelTask(() => instance.runPythonAsync(source))
               }
             }
           } catch (error) {
@@ -2228,7 +2971,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
             const updated = updateNodePositionInRender(drag)
             if (updated) {
-              queueNodePosSync(updated, 22)
+              queueNodePosSync(updated, VISUALIZER_CONSTANTS.sync.nodeDragSyncMs)
             }
 
             drawGallery()
@@ -2245,9 +2988,9 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           cameraOffsetX.value += dx
           cameraOffsetY.value += dy
           hasMovedCamera.value = true
-          notebookCameraOverrideUntil = Date.now() + 140
+          notebookCameraOverrideUntil = Date.now() + VISUALIZER_CONSTANTS.sync.notebookCameraOverrideMs
           drawGallery()
-          queueNotebookCameraSync(32)
+          queueNotebookCameraSync(VISUALIZER_CONSTANTS.sync.notebookCameraSyncMs)
         }
 
         function onCanvasPointerUp(event) {
@@ -2284,7 +3027,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               // Ignore release errors when pointer capture has already ended.
             }
           }
-          notebookCameraOverrideUntil = Date.now() + 140
+          notebookCameraOverrideUntil = Date.now() + VISUALIZER_CONSTANTS.sync.notebookCameraOverrideMs
           queueNotebookCameraSync()
         }
 
@@ -2300,8 +3043,12 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           const worldX = (localX - cameraOffsetX.value) / cameraScale.value
           const worldY = (localY - cameraOffsetY.value) / cameraScale.value
 
-          const factor = Math.exp(-event.deltaY * 0.0012)
-          const nextScale = clamp(cameraScale.value * factor, 0.1, 5)
+          const factor = Math.exp(-event.deltaY * VISUALIZER_CONSTANTS.zoom.wheelFactor)
+          const nextScale = clamp(
+            cameraScale.value * factor,
+            VISUALIZER_CONSTANTS.zoom.scaleMin,
+            VISUALIZER_CONSTANTS.zoom.scaleMax,
+          )
           if (nextScale === cameraScale.value) {
             return
           }
@@ -2310,9 +3057,9 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           cameraOffsetX.value = localX - worldX * nextScale
           cameraOffsetY.value = localY - worldY * nextScale
           hasMovedCamera.value = true
-          notebookCameraOverrideUntil = Date.now() + 140
+          notebookCameraOverrideUntil = Date.now() + VISUALIZER_CONSTANTS.sync.notebookCameraOverrideMs
           drawGallery()
-          queueNotebookCameraSync(32)
+          queueNotebookCameraSync(VISUALIZER_CONSTANTS.sync.notebookCameraSyncMs)
         }
 
         function resetGraphCamera() {
@@ -2332,13 +3079,20 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           queueGraphRefresh()
         }
 
+        async function flushPendingNodePosThenRefresh(delayMs = 0) {
+          if (pendingNodePosUpdates.size > 0) {
+            await flushPendingNodePosSync(3)
+          }
+          queueGraphRefresh(delayMs)
+        }
+
         function onCellComplete() {
-          queueGraphRefresh()
+          void flushPendingNodePosThenRefresh()
         }
 
         function onWorkspaceSync(payload) {
           if (payload && payload.mode === 'always-live') {
-            queueGraphRefresh(80)
+            void flushPendingNodePosThenRefresh(VISUALIZER_CONSTANTS.sync.workspaceSyncRefreshMs)
           }
         }
 
@@ -2356,20 +3110,12 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         })
 
         onBeforeUnmount(() => {
+          isComponentAlive = false
           stopResize()
           window.removeEventListener('resize', onWindowResize)
-          if (refreshTimer !== null) {
-            clearTimeout(refreshTimer)
-            refreshTimer = null
-          }
-          if (cameraSyncTimer !== null) {
-            clearTimeout(cameraSyncTimer)
-            cameraSyncTimer = null
-          }
-          if (nodePosSyncTimer !== null) {
-            clearTimeout(nodePosSyncTimer)
-            nodePosSyncTimer = null
-          }
+          graphRefreshJob.cancel()
+          cameraSyncJob.cancel()
+          nodePosSyncJob.cancel()
         })
 
         return {
