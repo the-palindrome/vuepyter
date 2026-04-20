@@ -7,9 +7,13 @@
   <title>Vuepyter Graph Theory Example</title>
   <link rel="stylesheet" href="../../vuepyter/dist/vuepyter.css" />
   <style>
+    @import url("https://cdn.jsdelivr.net/npm/computer-modern@0.1.2/index.min.css");
+
     :root {
       --app-gap: 0.75rem;
       --app-pad: 0.75rem;
+      --visualizer-bg: #ffffff;
+      --page-bg: #ffffff;
     }
 
     html,
@@ -17,7 +21,7 @@
       margin: 0;
       height: 100%;
       font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      background: #f3f4f6;
+      background: var(--page-bg);
       color: #111827;
     }
 
@@ -71,8 +75,8 @@
       box-sizing: border-box;
       overflow: hidden;
       border-radius: 0.7rem;
-      background: #271828;
-      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.28);
+      background: var(--visualizer-bg);
+      box-shadow: 0 12px 30px rgba(17, 24, 39, 0.14);
     }
 
     .graph-canvas {
@@ -81,7 +85,7 @@
       display: block;
       touch-action: none;
       cursor: grab;
-      background: #271828;
+      background: var(--visualizer-bg);
     }
 
     .graph-canvas.is-panning {
@@ -121,6 +125,7 @@
 
     const NOTEBOOK_URL = './graph-theory.ipynb'
     const DESKTOP_BREAKPOINT = 960
+    const VISUALIZER_FONT_FAMILY = '"CMU Serif", "Computer Modern Serif", "Latin Modern Roman", "Times New Roman", serif'
     const VISUALIZER_CONSTANTS = Object.freeze({
       viewport: Object.freeze({
         pageHorizontalPadding: 12,
@@ -148,8 +153,8 @@
         graphRowGap: 180,
         graphColumnGap: 190,
         titleOffsetY: 18,
-        nodeLabelRightPadding: 66,
-        nodeLabelTopPadding: 48,
+        nodeLabelRightPadding: 14,
+        nodeLabelTopPadding: 14,
         nodeNoLabelPadding: 14,
         nodeBoundsPadding: 12,
         nodeBottomPadding: 18,
@@ -226,6 +231,16 @@ def __vuepyter_is_camera_like__(value):
     return True
 
 
+def __vuepyter_is_canvas_like__(value):
+    if value is None or isinstance(value, type):
+        return False
+    try:
+        getattr(value, "background_color")
+    except Exception:
+        return False
+    return True
+
+
 def __vuepyter_iter_items__(value, limit=512):
     if value is None:
         return []
@@ -295,6 +310,45 @@ def __vuepyter_walk_for_graphs__(value, path, depth, seen, out):
         __vuepyter_walk_for_graphs__(attr_value, child_path, depth - 1, seen, out)
 
 
+def __vuepyter_walk_for_canvas__(value, path, depth, seen, out):
+    if depth < 0:
+        return
+
+    key = id(value)
+    if key in seen:
+        return
+    seen.add(key)
+
+    if __vuepyter_is_canvas_like__(value):
+        out.append((path, value))
+        return
+
+    if isinstance(value, dict):
+        for index, (item_key, item_value) in enumerate(list(value.items())[:64]):
+            child_path = __vuepyter_path_append_key__(path, item_key)
+            __vuepyter_walk_for_canvas__(item_value, child_path, depth - 1, seen, out)
+            if index >= 63:
+                break
+        return
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for index, item in enumerate(list(value)[:64]):
+            child_path = f"{path}[{index}]"
+            __vuepyter_walk_for_canvas__(item, child_path, depth - 1, seen, out)
+        return
+
+    try:
+        attr_items = list(vars(value).items())[:64]
+    except Exception:
+        attr_items = []
+
+    for attr_name, attr_value in attr_items:
+        if not isinstance(attr_name, str) or not attr_name or not attr_name.isidentifier():
+            continue
+        child_path = f"{path}.{attr_name}" if path else attr_name
+        __vuepyter_walk_for_canvas__(attr_value, child_path, depth - 1, seen, out)
+
+
 def __vuepyter_parse_display_label__(raw):
     if raw is None:
         return None
@@ -311,41 +365,46 @@ def __vuepyter_parse_display_label__(raw):
     return None
 
 
+def __vuepyter_parse_color__(raw_color):
+    if raw_color is None:
+        return None
+    try:
+        color = str(raw_color).strip()
+    except Exception:
+        return None
+    if not color:
+        return None
+    return color
+
+
 def __vuepyter_parse_node_metadata__(raw):
     metadata = getattr(raw, "metadata", None)
-    color = getattr(metadata, "color", None)
+    legacy_color = __vuepyter_parse_color__(getattr(metadata, "color", None))
+    fill_color = __vuepyter_parse_color__(getattr(metadata, "fill_color", None))
+    stroke_color = __vuepyter_parse_color__(getattr(metadata, "stroke_color", None))
+    stroke_width = __vuepyter_finite_float__(getattr(metadata, "stroke_width", None), default=None)
     size = getattr(metadata, "size", None)
     display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
 
-    if color is not None:
-        try:
-            color = str(color).strip()
-        except Exception:
-            color = None
-        if not color:
-            color = None
+    if stroke_width is not None and stroke_width < 0:
+        stroke_width = None
+
+    if fill_color is None and legacy_color is not None:
+        fill_color = legacy_color
 
     if size is not None:
         size = __vuepyter_finite_float__(size, default=None)
 
-    return color, size, display_label
+    return legacy_color, fill_color, stroke_color, stroke_width, size, display_label
 
 
 def __vuepyter_parse_edge_metadata__(raw):
     metadata = getattr(raw, "metadata", None)
-    color = getattr(metadata, "color", None)
+    color = __vuepyter_parse_color__(getattr(metadata, "color", None))
     width = getattr(metadata, "width", None)
     if width is None:
         width = getattr(metadata, "size", None)
     display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
-
-    if color is not None:
-        try:
-            color = str(color).strip()
-        except Exception:
-            color = None
-        if not color:
-            color = None
 
     if width is not None:
         width = __vuepyter_finite_float__(width, default=None)
@@ -490,6 +549,16 @@ def __vuepyter_camera_payload__(camera_name, camera_obj):
     }
 
 
+def __vuepyter_canvas_payload__(canvas_name, canvas_obj):
+    background_color = __vuepyter_parse_color__(getattr(canvas_obj, "background_color", None))
+    if background_color is None:
+        return None
+    return {
+        "name": canvas_name,
+        "background_color": background_color,
+    }
+
+
 def __vuepyter_graph_to_payload__(graph_name, graph_obj):
     graph_title, graph_display_label = __vuepyter_graph_title_and_display_label__(graph_name, graph_obj)
     raw_nodes = __vuepyter_iter_items__(getattr(graph_obj, "nodes", []), limit=512)
@@ -546,7 +615,7 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
                     existing_payload["uid"] = str(object_id)
             return existing_id
 
-        color, size, display_label = __vuepyter_parse_node_metadata__(raw)
+        color, fill_color, stroke_color, stroke_width, size, display_label = __vuepyter_parse_node_metadata__(raw)
         pos = __vuepyter_parse_pos__(getattr(raw, "pos", None))
 
         node_id = f"n{len(nodes)}"
@@ -561,6 +630,12 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
             node_payload["node_index"] = int(node_index)
         if color is not None:
             node_payload["color"] = color
+        if fill_color is not None:
+            node_payload["fill_color"] = fill_color
+        if stroke_color is not None:
+            node_payload["stroke_color"] = stroke_color
+        if stroke_width is not None:
+            node_payload["stroke_width"] = stroke_width
         if size is not None:
             node_payload["size"] = size
         if display_label is not None:
@@ -625,6 +700,7 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 graph_payloads = []
 seen_graph_ids = set()
 camera_payload = None
+canvas_payload = None
 
 for global_name, global_value in list(globals().items()):
     if global_name.startswith("_"):
@@ -636,6 +712,15 @@ for global_name, global_value in list(globals().items()):
         candidate_camera_payload = __vuepyter_camera_payload__(global_name, global_value)
         if candidate_camera_payload is not None:
             camera_payload = candidate_camera_payload
+
+    if canvas_payload is None:
+        discovered_canvas = []
+        __vuepyter_walk_for_canvas__(global_value, global_name, depth=2, seen=set(), out=discovered_canvas)
+        for canvas_path, canvas_obj in discovered_canvas:
+            candidate_canvas_payload = __vuepyter_canvas_payload__(canvas_path, canvas_obj)
+            if candidate_canvas_payload is not None:
+                canvas_payload = candidate_canvas_payload
+                break
 
     discovered = []
     __vuepyter_walk_for_graphs__(global_value, global_name, depth=2, seen=set(), out=discovered)
@@ -651,6 +736,7 @@ payload = {
     "ok": True,
     "graphs": graph_payloads,
     "camera": camera_payload,
+    "canvas": canvas_payload,
 }
 
 json.dumps(payload, allow_nan=False)
@@ -699,6 +785,7 @@ json.dumps(payload, allow_nan=False)
         const cameraScale = ref(1)
         const cameraOffsetX = ref(0)
         const cameraOffsetY = ref(0)
+        const visualizerCanvasBackground = ref('#ffffff')
 
         let lastPointerX = 0
         let lastPointerY = 0
@@ -916,6 +1003,9 @@ json.dumps(payload, allow_nan=False)
               const label = rawNode.label == null ? id : String(rawNode.label)
               const uid = rawNode.uid == null ? '' : String(rawNode.uid)
               const color = rawNode.color == null ? null : String(rawNode.color)
+              const fillColor = rawNode.fill_color == null ? null : String(rawNode.fill_color)
+              const strokeColor = rawNode.stroke_color == null ? null : String(rawNode.stroke_color)
+              const strokeWidthNumber = Number(rawNode.stroke_width)
               const sizeNumber = Number(rawNode.size)
               const nodeIndexNumber = Number(rawNode.node_index)
               const displayLabel = typeof rawNode.display_label === 'boolean' ? rawNode.display_label : true
@@ -925,6 +1015,9 @@ json.dumps(payload, allow_nan=False)
                 label,
                 uid,
                 color,
+                fillColor,
+                strokeColor,
+                strokeWidth: Number.isFinite(strokeWidthNumber) ? strokeWidthNumber : null,
                 size: Number.isFinite(sizeNumber) ? sizeNumber : null,
                 nodeIndex: Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null,
                 displayLabel,
@@ -977,9 +1070,9 @@ json.dumps(payload, allow_nan=False)
 
         function nodeRadius(node) {
           if (Number.isFinite(node.size)) {
-            return clamp(8 + node.size * 1.2, 9, 24)
+            return clamp(12 + node.size * 1.7, 14, 34)
           }
-          return 14
+          return 20
         }
 
         function resolveColor(rawColor, fallback) {
@@ -1011,12 +1104,28 @@ json.dumps(payload, allow_nan=False)
           return named[key] || fallback
         }
 
-        function nodeColor(node) {
-          return resolveColor(node.color, '#10b981')
+        function nodeFillColor(node) {
+          const legacyColor = resolveColor(node.color, '#93c5fd')
+          return resolveColor(node.fillColor, legacyColor)
+        }
+
+        function nodeStrokeColor(node) {
+          const fallback = '#111827'
+          return resolveColor(node.strokeColor, fallback)
+        }
+
+        function nodeStrokeWidth(node) {
+          if (Number.isFinite(node.strokeWidth)) {
+            return clamp(node.strokeWidth, 0, 16)
+          }
+          if (typeof node.strokeColor === 'string' && node.strokeColor.trim()) {
+            return 2.4
+          }
+          return 0
         }
 
         function edgeColor(edge) {
-          return resolveColor(edge.color, 'rgba(250, 250, 252, 0.95)')
+          return resolveColor(edge.color, '#8a8a8a')
         }
 
         function edgeStrokeWidth(edge) {
@@ -1055,7 +1164,9 @@ json.dumps(payload, allow_nan=False)
               y: fixed ? Number(storedPos[1]) : Math.sin(angle) * spreadRadius - jitter,
               fixed,
               radius: nodeRadius(node),
-              color: nodeColor(node),
+              fillColor: nodeFillColor(node),
+              strokeColor: nodeStrokeColor(node),
+              strokeWidth: nodeStrokeWidth(node),
               displayLabel: node.displayLabel !== false,
             }
           })
@@ -1131,11 +1242,10 @@ json.dumps(payload, allow_nan=False)
           let maxY = Number.NEGATIVE_INFINITY
 
           for (const point of positions) {
-            const rightPad = point.displayLabel ? 54 : 10
-            const topPad = point.displayLabel ? 38 : 10
-            minX = Math.min(minX, point.x - point.radius - 8)
-            maxX = Math.max(maxX, point.x + point.radius + rightPad)
-            minY = Math.min(minY, point.y - point.radius - topPad)
+            const labelPad = point.displayLabel ? 12 : 10
+            minX = Math.min(minX, point.x - point.radius - labelPad)
+            maxX = Math.max(maxX, point.x + point.radius + labelPad)
+            minY = Math.min(minY, point.y - point.radius - labelPad)
             maxY = Math.max(maxY, point.y + point.radius + 14)
           }
 
@@ -1147,7 +1257,9 @@ json.dumps(payload, allow_nan=False)
             localX: positions[index].x,
             localY: positions[index].y,
             radius: positions[index].radius,
-            color: positions[index].color,
+            fillColor: positions[index].fillColor,
+            strokeColor: positions[index].strokeColor,
+            strokeWidth: positions[index].strokeWidth,
             displayLabel: positions[index].displayLabel,
             posProvided: node.posProvided === true,
           }))
@@ -1386,6 +1498,21 @@ json.dumps(payload, allow_nan=False)
             center: [cx, cy, cz],
             height,
             moving: !!raw.moving,
+          }
+        }
+
+        function parseNotebookCanvas(payload) {
+          const raw = payload?.canvas
+          if (!raw || typeof raw !== 'object') {
+            return null
+          }
+          const backgroundColor = raw.background_color == null ? '' : String(raw.background_color)
+          if (!backgroundColor.trim()) {
+            return null
+          }
+          return {
+            name: typeof raw.name === 'string' && raw.name ? raw.name : '',
+            backgroundColor,
           }
         }
 
@@ -2539,7 +2666,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
           ctx.clearRect(0, 0, width, height)
 
-          ctx.fillStyle = '#271828'
+          ctx.fillStyle = visualizerCanvasBackground.value
           ctx.fillRect(0, 0, width, height)
 
           const graphs = graphGallery.value
@@ -2590,37 +2717,41 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               ctx.fillStyle = edge.color
               ctx.textAlign = 'center'
               ctx.textBaseline = 'middle'
-              ctx.font = `italic ${20 / cameraScale.value}px "Times New Roman", Georgia, serif`
+              ctx.font = `italic ${20 / cameraScale.value}px ${VISUALIZER_FONT_FAMILY}`
               ctx.fillText(edge.label, midX, midY)
             }
 
             for (const node of graph.render.nodes) {
               ctx.save()
-              ctx.shadowColor = `${node.color}99`
-              ctx.shadowBlur = 18 / cameraScale.value
-              ctx.fillStyle = node.color
+              ctx.fillStyle = node.fillColor
               ctx.beginPath()
               ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2)
               ctx.fill()
+              if (node.strokeWidth > 0) {
+                ctx.lineWidth = node.strokeWidth / cameraScale.value
+                ctx.strokeStyle = node.strokeColor
+                ctx.stroke()
+              }
               ctx.restore()
             }
 
-            ctx.fillStyle = 'rgba(250, 250, 252, 0.98)'
-            ctx.textAlign = 'left'
+            ctx.fillStyle = 'rgba(17, 24, 39, 0.95)'
+            ctx.textAlign = 'center'
             ctx.textBaseline = 'middle'
-            ctx.font = `italic ${34 / cameraScale.value}px "Times New Roman", Georgia, serif`
             for (const node of graph.render.nodes) {
               if (!node.displayLabel) {
                 continue
               }
-              ctx.fillText(node.label, node.x + node.radius + 8, node.y - node.radius * 0.95)
+              const nodeLabelSize = clamp(node.radius * 0.95, 14, 30)
+              ctx.font = `italic ${nodeLabelSize / cameraScale.value}px ${VISUALIZER_FONT_FAMILY}`
+              ctx.fillText(node.label, node.x, node.y)
             }
 
-            ctx.fillStyle = 'rgba(238, 241, 246, 0.9)'
+            ctx.fillStyle = 'rgba(55, 65, 81, 0.9)'
             if (graph.render.displayLabel) {
               ctx.textAlign = 'center'
               ctx.textBaseline = 'middle'
-              ctx.font = `italic ${26 / cameraScale.value}px "Times New Roman", Georgia, serif`
+              ctx.font = `italic ${26 / cameraScale.value}px ${VISUALIZER_FONT_FAMILY}`
               ctx.fillText(graph.render.title, graph.render.titleX, graph.render.titleY)
             }
           }
@@ -2681,7 +2812,14 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
           const hadNotebookCamera = cameraControlledByNotebook.value
           const notebookCamera = parseNotebookCamera(payload)
+          const notebookCanvas = parseNotebookCanvas(payload)
           cameraControlledByNotebook.value = notebookCamera !== null
+
+          if (notebookCanvas) {
+            visualizerCanvasBackground.value = resolveColor(notebookCanvas.backgroundColor, '#ffffff')
+          } else {
+            visualizerCanvasBackground.value = '#ffffff'
+          }
 
           if (notebookCamera) {
             notebookCameraName.value = notebookCamera.name
