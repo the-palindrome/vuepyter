@@ -166,6 +166,44 @@
         nodeHitPadding: 9,
         minHitScale: 0.2,
       }),
+      render: Object.freeze({
+        colors: Object.freeze({
+          nodeFill: '#bfdbfe',
+          nodeStroke: '#111111',
+          nodeLabel: 'rgba(17, 24, 39, 0.95)',
+          edge: '#afb6c2',
+          graphTitle: 'rgba(55, 65, 81, 0.9)',
+        }),
+        node: Object.freeze({
+          defaultDiameter: 84,
+          minDiameter: 20,
+          maxDiameter: 220,
+          defaultStrokeWidth: 3,
+          minStrokeWidth: 0,
+          maxStrokeWidth: 64,
+          defaultLabelSize: 30,
+          labelScale: 0.72,
+          labelMin: 8,
+          labelMax: 160,
+        }),
+        edge: Object.freeze({
+          defaultWidth: 6,
+          minWidth: 0.5,
+          maxWidth: 64,
+          arrowScale: 2.8,
+          arrowMin: 10,
+          arrowMax: 34,
+          labelOffsetScale: 1.6,
+          labelOffsetMin: 10,
+          labelOffsetMax: 28,
+          labelSizeScale: 2.1,
+          labelMin: 10,
+          labelMax: 34,
+        }),
+        graph: Object.freeze({
+          titleSize: 26,
+        }),
+      }),
       sync: Object.freeze({
         graphRefreshWhileNotebookCameraMovingMs: 16,
         workspaceSyncRefreshMs: 80,
@@ -379,35 +417,36 @@ def __vuepyter_parse_color__(raw_color):
 
 def __vuepyter_parse_node_metadata__(raw):
     metadata = getattr(raw, "metadata", None)
-    legacy_color = __vuepyter_parse_color__(getattr(metadata, "color", None))
     fill_color = __vuepyter_parse_color__(getattr(metadata, "fill_color", None))
     stroke_color = __vuepyter_parse_color__(getattr(metadata, "stroke_color", None))
     stroke_width = __vuepyter_finite_float__(getattr(metadata, "stroke_width", None), default=None)
-    size = getattr(metadata, "size", None)
+    diameter = __vuepyter_finite_float__(getattr(metadata, "diameter", None), default=None)
+    label_size = __vuepyter_finite_float__(getattr(metadata, "label_size", None), default=None)
+    label_color = __vuepyter_parse_color__(getattr(metadata, "label_color", None))
     display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
 
     if stroke_width is not None and stroke_width < 0:
         stroke_width = None
 
-    if fill_color is None and legacy_color is not None:
-        fill_color = legacy_color
+    if diameter is not None and diameter < 0:
+        diameter = None
 
-    if size is not None:
-        size = __vuepyter_finite_float__(size, default=None)
+    if label_size is not None and label_size < 0:
+        label_size = None
 
-    return legacy_color, fill_color, stroke_color, stroke_width, size, display_label
+    return fill_color, stroke_color, stroke_width, diameter, label_size, label_color, display_label
 
 
 def __vuepyter_parse_edge_metadata__(raw):
     metadata = getattr(raw, "metadata", None)
     color = __vuepyter_parse_color__(getattr(metadata, "color", None))
     width = getattr(metadata, "width", None)
-    if width is None:
-        width = getattr(metadata, "size", None)
     display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
 
     if width is not None:
         width = __vuepyter_finite_float__(width, default=None)
+        if width is not None and width < 0:
+            width = None
 
     return color, width, display_label
 
@@ -615,7 +654,7 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
                     existing_payload["uid"] = str(object_id)
             return existing_id
 
-        color, fill_color, stroke_color, stroke_width, size, display_label = __vuepyter_parse_node_metadata__(raw)
+        fill_color, stroke_color, stroke_width, diameter, label_size, label_color, display_label = __vuepyter_parse_node_metadata__(raw)
         pos = __vuepyter_parse_pos__(getattr(raw, "pos", None))
 
         node_id = f"n{len(nodes)}"
@@ -628,16 +667,18 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
             node_payload["uid"] = str(object_id)
         if node_index is not None:
             node_payload["node_index"] = int(node_index)
-        if color is not None:
-            node_payload["color"] = color
         if fill_color is not None:
             node_payload["fill_color"] = fill_color
         if stroke_color is not None:
             node_payload["stroke_color"] = stroke_color
         if stroke_width is not None:
             node_payload["stroke_width"] = stroke_width
-        if size is not None:
-            node_payload["size"] = size
+        if diameter is not None:
+            node_payload["diameter"] = diameter
+        if label_size is not None:
+            node_payload["label_size"] = label_size
+        if label_color is not None:
+            node_payload["label_color"] = label_color
         if display_label is not None:
             node_payload["display_label"] = display_label
         if pos is not None:
@@ -1002,11 +1043,18 @@ json.dumps(payload, allow_nan=False)
               }
               const label = rawNode.label == null ? id : String(rawNode.label)
               const uid = rawNode.uid == null ? '' : String(rawNode.uid)
-              const color = rawNode.color == null ? null : String(rawNode.color)
-              const fillColor = rawNode.fill_color == null ? null : String(rawNode.fill_color)
-              const strokeColor = rawNode.stroke_color == null ? null : String(rawNode.stroke_color)
-              const strokeWidthNumber = Number(rawNode.stroke_width)
-              const sizeNumber = Number(rawNode.size)
+              const fillColorRaw = rawNode.fill_color
+              const strokeColorRaw = rawNode.stroke_color
+              const strokeWidthRaw = rawNode.stroke_width
+              const diameterRaw = rawNode.diameter
+              const labelSizeRaw = rawNode.label_size
+              const labelColorRaw = rawNode.label_color
+              const fillColor = fillColorRaw == null ? null : String(fillColorRaw)
+              const strokeColor = strokeColorRaw == null ? null : String(strokeColorRaw)
+              const labelColor = labelColorRaw == null ? null : String(labelColorRaw)
+              const strokeWidthNumber = Number(strokeWidthRaw)
+              const diameterNumber = Number(diameterRaw)
+              const labelSizeNumber = Number(labelSizeRaw)
               const nodeIndexNumber = Number(rawNode.node_index)
               const displayLabel = typeof rawNode.display_label === 'boolean' ? rawNode.display_label : true
               const pos = parseNodePos(rawNode.pos)
@@ -1014,11 +1062,14 @@ json.dumps(payload, allow_nan=False)
                 id,
                 label,
                 uid,
-                color,
                 fillColor,
                 strokeColor,
-                strokeWidth: Number.isFinite(strokeWidthNumber) ? strokeWidthNumber : null,
-                size: Number.isFinite(sizeNumber) ? sizeNumber : null,
+                labelColor,
+                strokeWidth: Number.isFinite(strokeWidthNumber) && strokeWidthNumber >= 0
+                  ? strokeWidthNumber
+                  : null,
+                diameter: Number.isFinite(diameterNumber) && diameterNumber >= 0 ? diameterNumber : null,
+                labelSize: Number.isFinite(labelSizeNumber) && labelSizeNumber >= 0 ? labelSizeNumber : null,
                 nodeIndex: Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null,
                 displayLabel,
                 pos,
@@ -1038,14 +1089,15 @@ json.dumps(payload, allow_nan=False)
                 continue
               }
               const color = rawEdge.color == null ? null : String(rawEdge.color)
-              const widthNumber = Number(rawEdge.width)
+              const widthRaw = rawEdge.width
+              const widthNumber = Number(widthRaw)
               const displayLabel = typeof rawEdge.display_label === 'boolean' ? rawEdge.display_label : false
               const label = rawEdge.label == null ? '' : String(rawEdge.label)
               edges.push({
                 source,
                 target,
                 color,
-                width: Number.isFinite(widthNumber) ? widthNumber : null,
+                width: Number.isFinite(widthNumber) && widthNumber >= 0 ? widthNumber : null,
                 displayLabel,
                 label,
               })
@@ -1068,11 +1120,27 @@ json.dumps(payload, allow_nan=False)
           return output
         }
 
-        function nodeRadius(node) {
-          if (Number.isFinite(node.size)) {
-            return clamp(12 + node.size * 1.7, 14, 34)
+        function finiteNumber(value) {
+          const numeric = Number(value)
+          return Number.isFinite(numeric) ? numeric : null
+        }
+
+        function resolveDirectSizedValue(rawValue, config) {
+          const numeric = finiteNumber(rawValue)
+          if (numeric === null) {
+            return config.defaultValue
           }
-          return 20
+          return clamp(numeric, config.minValue, config.maxValue)
+        }
+
+        function nodeRadius(node) {
+          const nodeSizing = VISUALIZER_CONSTANTS.render.node
+          const diameter = resolveDirectSizedValue(node.diameter, {
+            defaultValue: nodeSizing.defaultDiameter,
+            minValue: nodeSizing.minDiameter,
+            maxValue: nodeSizing.maxDiameter,
+          })
+          return diameter * 0.5
         }
 
         function resolveColor(rawColor, fallback) {
@@ -1105,34 +1173,82 @@ json.dumps(payload, allow_nan=False)
         }
 
         function nodeFillColor(node) {
-          const legacyColor = resolveColor(node.color, '#93c5fd')
-          return resolveColor(node.fillColor, legacyColor)
+          return resolveColor(node.fillColor, VISUALIZER_CONSTANTS.render.colors.nodeFill)
         }
 
         function nodeStrokeColor(node) {
-          const fallback = '#111827'
+          const fallback = VISUALIZER_CONSTANTS.render.colors.nodeStroke
           return resolveColor(node.strokeColor, fallback)
         }
 
         function nodeStrokeWidth(node) {
-          if (Number.isFinite(node.strokeWidth)) {
-            return clamp(node.strokeWidth, 0, 16)
-          }
-          if (typeof node.strokeColor === 'string' && node.strokeColor.trim()) {
-            return 2.4
-          }
-          return 0
+          const nodeSizing = VISUALIZER_CONSTANTS.render.node
+          return resolveDirectSizedValue(node.strokeWidth, {
+            defaultValue: nodeSizing.defaultStrokeWidth,
+            minValue: nodeSizing.minStrokeWidth,
+            maxValue: nodeSizing.maxStrokeWidth,
+          })
+        }
+
+        function nodeLabelColor(node) {
+          return resolveColor(node.labelColor, VISUALIZER_CONSTANTS.render.colors.nodeLabel)
         }
 
         function edgeColor(edge) {
-          return resolveColor(edge.color, '#8a8a8a')
+          return resolveColor(edge.color, VISUALIZER_CONSTANTS.render.colors.edge)
         }
 
         function edgeStrokeWidth(edge) {
-          if (Number.isFinite(edge.width)) {
-            return clamp(1.4 + edge.width * 0.44, 1.2, 18)
+          const edgeSizing = VISUALIZER_CONSTANTS.render.edge
+          return resolveDirectSizedValue(edge.width, {
+            defaultValue: edgeSizing.defaultWidth,
+            minValue: edgeSizing.minWidth,
+            maxValue: edgeSizing.maxWidth,
+          })
+        }
+
+        function edgeArrowSize(edgeWidth) {
+          const edgeSizing = VISUALIZER_CONSTANTS.render.edge
+          return clamp(
+            edgeWidth * edgeSizing.arrowScale,
+            edgeSizing.arrowMin,
+            edgeSizing.arrowMax,
+          )
+        }
+
+        function edgeLabelFontSize(edgeWidth) {
+          const edgeSizing = VISUALIZER_CONSTANTS.render.edge
+          return clamp(
+            10 + edgeWidth * edgeSizing.labelSizeScale,
+            edgeSizing.labelMin,
+            edgeSizing.labelMax,
+          )
+        }
+
+        function edgeLabelOffset(edgeWidth) {
+          const edgeSizing = VISUALIZER_CONSTANTS.render.edge
+          return clamp(
+            edgeWidth * edgeSizing.labelOffsetScale,
+            edgeSizing.labelOffsetMin,
+            edgeSizing.labelOffsetMax,
+          )
+        }
+
+        function nodeLabelFontSize(node, nodeRadiusValue = null) {
+          const nodeSizing = VISUALIZER_CONSTANTS.render.node
+          const explicitLabelSize = finiteNumber(node?.labelSize)
+          if (explicitLabelSize !== null) {
+            return clamp(explicitLabelSize, nodeSizing.labelMin, nodeSizing.labelMax)
           }
-          return 5.8
+          const radius = Number.isFinite(nodeRadiusValue) ? nodeRadiusValue : finiteNumber(node?.radius)
+          if (!Number.isFinite(radius)) {
+            return nodeSizing.defaultLabelSize
+          }
+          return clamp(
+            radius * nodeSizing.labelScale,
+            nodeSizing.labelMin,
+            nodeSizing.labelMax,
+          )
         }
 
         function layoutSingleGraph(graph) {
@@ -1159,11 +1275,14 @@ json.dumps(payload, allow_nan=False)
             const angle = (Math.PI * 2 * index) / Math.max(1, total)
             const jitter = ((hashString(node.id) % 1000) / 1000 - 0.5) * 14
             const spreadRadius = Math.max(120, total * 24)
+            const radius = nodeRadius(node)
             return {
               x: fixed ? Number(storedPos[0]) : Math.cos(angle) * spreadRadius + jitter,
               y: fixed ? Number(storedPos[1]) : Math.sin(angle) * spreadRadius - jitter,
               fixed,
-              radius: nodeRadius(node),
+              radius,
+              labelSize: nodeLabelFontSize(node, radius),
+              labelColor: nodeLabelColor(node),
               fillColor: nodeFillColor(node),
               strokeColor: nodeStrokeColor(node),
               strokeWidth: nodeStrokeWidth(node),
@@ -1257,6 +1376,8 @@ json.dumps(payload, allow_nan=False)
             localX: positions[index].x,
             localY: positions[index].y,
             radius: positions[index].radius,
+            labelSize: positions[index].labelSize,
+            labelColor: positions[index].labelColor,
             fillColor: positions[index].fillColor,
             strokeColor: positions[index].strokeColor,
             strokeWidth: positions[index].strokeWidth,
@@ -1386,11 +1507,15 @@ json.dumps(payload, allow_nan=False)
                 if (!source || !target) {
                   return null
                 }
+                const width = edgeStrokeWidth(edge)
                 return {
                   source,
                   target,
                   color: edgeColor(edge),
-                  width: edgeStrokeWidth(edge),
+                  width,
+                  arrowSize: edgeArrowSize(width),
+                  labelOffset: edgeLabelOffset(width),
+                  labelSize: edgeLabelFontSize(width),
                   displayLabel: !!edge.displayLabel && !!edge.label,
                   label: edge.label || '',
                 }
@@ -2639,8 +2764,9 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
           const ux = dx / dist
           const uy = dy / dist
-          const tipX = target.x - ux * (target.radius + 2)
-          const tipY = target.y - uy * (target.radius + 2)
+          const tipInset = target.radius + Math.max(2, target.strokeWidth * 0.5)
+          const tipX = target.x - ux * tipInset
+          const tipY = target.y - uy * tipInset
           const wingX = -uy
           const wingY = ux
 
@@ -2650,6 +2776,37 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           ctx.lineTo(tipX - ux * size - wingX * size * 0.58, tipY - uy * size - wingY * size * 0.58)
           ctx.closePath()
           ctx.fill()
+        }
+
+        function drawCenteredText(ctx, text, centerX, centerY) {
+          const label = text == null ? '' : String(text)
+          if (!label) {
+            return
+          }
+          const metrics = ctx.measureText(label)
+          const hasHorizontalMetrics = (
+            Number.isFinite(metrics.actualBoundingBoxLeft)
+            && Number.isFinite(metrics.actualBoundingBoxRight)
+            && (metrics.actualBoundingBoxLeft !== 0 || metrics.actualBoundingBoxRight !== 0)
+          )
+          const hasVerticalMetrics = (
+            Number.isFinite(metrics.actualBoundingBoxAscent)
+            && Number.isFinite(metrics.actualBoundingBoxDescent)
+            && (metrics.actualBoundingBoxAscent !== 0 || metrics.actualBoundingBoxDescent !== 0)
+          )
+
+          let drawX = centerX
+          let drawY = centerY
+          if (hasHorizontalMetrics) {
+            drawX = centerX - ((metrics.actualBoundingBoxRight - metrics.actualBoundingBoxLeft) * 0.5)
+          }
+          if (hasVerticalMetrics) {
+            drawY = centerY + ((metrics.actualBoundingBoxAscent - metrics.actualBoundingBoxDescent) * 0.5)
+          }
+
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText(label, drawX, drawY)
         }
 
         function drawGallery() {
@@ -2688,7 +2845,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
             for (const edge of graph.render.edges) {
               ctx.strokeStyle = edge.color
-              ctx.lineWidth = edge.width / cameraScale.value
+              ctx.lineWidth = edge.width
               ctx.beginPath()
               ctx.moveTo(edge.source.x, edge.source.y)
               ctx.lineTo(edge.target.x, edge.target.y)
@@ -2698,7 +2855,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             if (graph.render.directed) {
               for (const edge of graph.render.edges) {
                 ctx.fillStyle = edge.color
-                drawArrowhead(ctx, edge.source, edge.target, 13 / cameraScale.value)
+                drawArrowhead(ctx, edge.source, edge.target, edge.arrowSize)
               }
             }
 
@@ -2711,13 +2868,13 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               const dist = Math.hypot(dx, dy) || 1
               const nx = -dy / dist
               const ny = dx / dist
-              const midX = (edge.source.x + edge.target.x) / 2 + nx * (14 / cameraScale.value)
-              const midY = (edge.source.y + edge.target.y) / 2 + ny * (14 / cameraScale.value)
+              const midX = (edge.source.x + edge.target.x) / 2 + nx * edge.labelOffset
+              const midY = (edge.source.y + edge.target.y) / 2 + ny * edge.labelOffset
 
               ctx.fillStyle = edge.color
               ctx.textAlign = 'center'
               ctx.textBaseline = 'middle'
-              ctx.font = `italic ${20 / cameraScale.value}px ${VISUALIZER_FONT_FAMILY}`
+              ctx.font = `italic ${edge.labelSize}px ${VISUALIZER_FONT_FAMILY}`
               ctx.fillText(edge.label, midX, midY)
             }
 
@@ -2728,30 +2885,29 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               ctx.arc(node.x, node.y, node.radius, 0, Math.PI * 2)
               ctx.fill()
               if (node.strokeWidth > 0) {
-                ctx.lineWidth = node.strokeWidth / cameraScale.value
+                ctx.lineWidth = node.strokeWidth
                 ctx.strokeStyle = node.strokeColor
                 ctx.stroke()
               }
               ctx.restore()
             }
 
-            ctx.fillStyle = 'rgba(17, 24, 39, 0.95)'
             ctx.textAlign = 'center'
             ctx.textBaseline = 'middle'
             for (const node of graph.render.nodes) {
               if (!node.displayLabel) {
                 continue
               }
-              const nodeLabelSize = clamp(node.radius * 0.95, 14, 30)
-              ctx.font = `italic ${nodeLabelSize / cameraScale.value}px ${VISUALIZER_FONT_FAMILY}`
-              ctx.fillText(node.label, node.x, node.y)
+              ctx.fillStyle = resolveColor(node.labelColor, VISUALIZER_CONSTANTS.render.colors.nodeLabel)
+              ctx.font = `italic ${node.labelSize}px ${VISUALIZER_FONT_FAMILY}`
+              drawCenteredText(ctx, node.label, node.x, node.y)
             }
 
-            ctx.fillStyle = 'rgba(55, 65, 81, 0.9)'
+            ctx.fillStyle = VISUALIZER_CONSTANTS.render.colors.graphTitle
             if (graph.render.displayLabel) {
               ctx.textAlign = 'center'
               ctx.textBaseline = 'middle'
-              ctx.font = `italic ${26 / cameraScale.value}px ${VISUALIZER_FONT_FAMILY}`
+              ctx.font = `italic ${VISUALIZER_CONSTANTS.render.graph.titleSize}px ${VISUALIZER_FONT_FAMILY}`
               ctx.fillText(graph.render.title, graph.render.titleX, graph.render.titleY)
             }
           }
