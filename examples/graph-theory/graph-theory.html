@@ -835,6 +835,7 @@ json.dumps(payload, allow_nan=False)
         const pendingNodePosUpdates = new Map()
         let nodePosSyncInFlight = false
         let notebookCameraOverrideUntil = 0
+        let animationPlaybackWasActive = false
 
         let worldBounds = { ...VISUALIZER_CONSTANTS.viewport.defaultWorldBounds }
         let kernelTaskQueue = Promise.resolve()
@@ -1798,6 +1799,366 @@ if __vuepyter_camera_obj__ is not None:
             return
           }
           cameraSyncJob.queue(delayMs)
+        }
+
+        function parseAnimationNodeUpdates(payload) {
+          const rawNodes = Array.isArray(payload?.nodes) ? payload.nodes : []
+          const updates = []
+          for (const rawNode of rawNodes) {
+            if (!rawNode || typeof rawNode !== 'object') {
+              continue
+            }
+            const graphUid = rawNode.graph_uid == null ? '' : String(rawNode.graph_uid)
+            const graphName = rawNode.graph == null ? '' : String(rawNode.graph)
+            if (!graphUid && !graphName) {
+              continue
+            }
+            const nodeUid = rawNode.node_uid == null ? '' : String(rawNode.node_uid)
+            const nodeId = rawNode.node_id == null ? '' : String(rawNode.node_id)
+            const nodeLabel = rawNode.node_label == null ? '' : String(rawNode.node_label)
+            const nodeIndexNumber = Number(rawNode.node_index)
+            const rawPos = Array.isArray(rawNode.pos) ? rawNode.pos : null
+            if (!rawPos || rawPos.length < 2) {
+              continue
+            }
+            const localX = Number(rawPos[0])
+            const localY = Number(rawPos[1])
+            if (!Number.isFinite(localX) || !Number.isFinite(localY)) {
+              continue
+            }
+            updates.push({
+              graphUid,
+              graphName,
+              nodeUid,
+              nodeId,
+              nodeIndex: Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null,
+              nodeLabel,
+              localX,
+              localY,
+              moving: !!rawNode.moving,
+            })
+          }
+          return updates
+        }
+
+        function applyAnimationNodeUpdate(update) {
+          if (!update || typeof update !== 'object') {
+            return false
+          }
+          const found = findRenderedNode({
+            graphUid: update.graphUid,
+            graphName: update.graphName,
+            nodeUid: update.nodeUid,
+            nodeId: update.nodeId,
+            nodeIndex: update.nodeIndex,
+            nodeLabel: update.nodeLabel,
+          })
+          if (!found || !found.graph || !found.graph.render) {
+            return false
+          }
+          const worldX = update.localX + found.graph.render.offsetX
+          const worldY = update.localY + found.graph.render.offsetY
+          updateNodePositionInRender({
+            graphUid: update.graphUid,
+            graphName: update.graphName,
+            nodeUid: update.nodeUid,
+            nodeId: update.nodeId,
+            nodeIndex: update.nodeIndex,
+            nodeLabel: update.nodeLabel,
+            worldX,
+            worldY,
+          })
+          return true
+        }
+
+        const animationPlaybackJob = createQueuedAsyncJob(async () => {
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            return null
+          }
+
+          const graphRefs = Array.isArray(graphGallery.value)
+            ? graphGallery.value
+              .map((graph) => ({
+                uid: graph?.uid == null ? '' : String(graph.uid),
+                name: typeof graph?.name === 'string' ? graph.name : '',
+              }))
+              .filter((entry) => entry.uid || entry.name)
+            : []
+          const cameraName = (
+            cameraControlledByNotebook.value && notebookCameraName.value
+              ? notebookCameraName.value
+              : ''
+          )
+          if (!cameraName && graphRefs.length === 0) {
+            return null
+          }
+
+          const payload = JSON.stringify({
+            camera_name: cameraName,
+            graphs: graphRefs,
+          })
+
+          let rawResult = null
+          try {
+            rawResult = await runSerializedKernelTask(() => instance.runPythonAsync(`
+import json
+import math
+
+
+def __vuepyter_finite_float__(value):
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def __vuepyter_parse_pos__(raw_pos):
+    if isinstance(raw_pos, (list, tuple)) and len(raw_pos) >= 2:
+        px = __vuepyter_finite_float__(raw_pos[0])
+        py = __vuepyter_finite_float__(raw_pos[1])
+        if px is not None and py is not None:
+            return [px, py]
+    if isinstance(raw_pos, dict):
+        px = __vuepyter_finite_float__(raw_pos.get("x"))
+        py = __vuepyter_finite_float__(raw_pos.get("y"))
+        if px is not None and py is not None:
+            return [px, py]
+    return None
+
+
+def __vuepyter_parse_bool__(raw):
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered in ("true", "1", "yes", "y", "on"):
+            return True
+        if lowered in ("false", "0", "no", "n", "off"):
+            return False
+    return False
+
+
+def __vuepyter_is_graph_like__(value):
+    if value is None or isinstance(value, type):
+        return False
+    try:
+        nodes = getattr(value, "nodes")
+        edges = getattr(value, "edges")
+    except Exception:
+        return False
+
+    try:
+        iter(nodes)
+        iter(edges)
+    except Exception:
+        return False
+    return True
+
+
+def __vuepyter_iter_items__(value, limit=512):
+    try:
+        iterator = iter(value)
+    except Exception:
+        return []
+    out = []
+    for index, item in enumerate(iterator):
+        if index >= limit:
+            break
+        out.append(item)
+    return out
+
+
+__vuepyter_anim_query__ = json.loads(${JSON.stringify(payload)})
+__vuepyter_output__ = {
+    "camera": None,
+    "nodes": [],
+    "moving": False,
+}
+
+__camera_name = __vuepyter_anim_query__.get("camera_name")
+if isinstance(__camera_name, str) and __camera_name:
+    __camera_obj = globals().get(__camera_name)
+    if __camera_obj is not None and not isinstance(__camera_obj, type):
+        __state_fn = getattr(__camera_obj, "state", None)
+        if callable(__state_fn):
+            try:
+                __camera_state = __state_fn()
+            except Exception:
+                __camera_state = None
+            if isinstance(__camera_state, dict):
+                __center = __camera_state.get("center")
+                __height = __vuepyter_finite_float__(__camera_state.get("height"))
+                if isinstance(__center, (list, tuple)) and len(__center) >= 3 and __height is not None:
+                    __cx = __vuepyter_finite_float__(__center[0])
+                    __cy = __vuepyter_finite_float__(__center[1])
+                    __cz = __vuepyter_finite_float__(__center[2])
+                    if __cx is not None and __cy is not None and __cz is not None:
+                        __camera_moving = __vuepyter_parse_bool__(__camera_state.get("moving", False))
+                        __vuepyter_output__["camera"] = {
+                            "name": __camera_name,
+                            "center": [__cx, __cy, __cz],
+                            "height": __height,
+                            "moving": __camera_moving,
+                        }
+                        if __camera_moving:
+                            __vuepyter_output__["moving"] = True
+
+for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs", []), limit=128):
+    if not isinstance(__graph_ref, dict):
+        continue
+    __graph_name = __graph_ref.get("name")
+    __graph_uid = __graph_ref.get("uid")
+    if not isinstance(__graph_name, str) or not __graph_name:
+        continue
+    __graph_obj = globals().get(__graph_name)
+    if not __vuepyter_is_graph_like__(__graph_obj):
+        continue
+    if not __graph_uid:
+        try:
+            __graph_uid = str(id(__graph_obj))
+        except Exception:
+            __graph_uid = ""
+
+    __graph_nodes = __vuepyter_iter_items__(getattr(__graph_obj, "nodes", []), limit=512)
+    for __node_index, __node in enumerate(__graph_nodes):
+        if __node is None:
+            continue
+
+        __node_pos = None
+        __node_moving = False
+
+        __node_state_fn = getattr(__node, "state", None)
+        if callable(__node_state_fn):
+            try:
+                __node_state = __node_state_fn()
+            except Exception:
+                __node_state = None
+            if isinstance(__node_state, dict):
+                __node_pos = __vuepyter_parse_pos__(__node_state.get("pos"))
+                if __node_pos is None:
+                    __node_pos = __vuepyter_parse_pos__(__node_state.get("center"))
+                __node_moving = __vuepyter_parse_bool__(__node_state.get("moving", False))
+
+        if __node_pos is None:
+            __node_pos = __vuepyter_parse_pos__(getattr(__node, "pos", None))
+
+        if not __node_moving:
+            __node_moving = (
+                __vuepyter_parse_bool__(getattr(__node, "moving", None))
+                or __vuepyter_parse_bool__(getattr(__node, "_moving", None))
+            )
+
+        if __node_pos is None:
+            continue
+
+        try:
+            __node_uid = str(id(__node))
+        except Exception:
+            __node_uid = ""
+        try:
+            __node_label = str(getattr(__node, "label"))
+        except Exception:
+            __node_label = ""
+        try:
+            __node_id = getattr(__node, "id", None)
+        except Exception:
+            __node_id = None
+
+        __vuepyter_output__["nodes"].append({
+            "graph_uid": str(__graph_uid) if __graph_uid is not None else "",
+            "graph": __graph_name,
+            "node_uid": __node_uid,
+            "node_id": "" if __node_id is None else str(__node_id),
+            "node_index": __node_index,
+            "node_label": __node_label,
+            "pos": __node_pos,
+            "moving": bool(__node_moving),
+        })
+        if __node_moving:
+            __vuepyter_output__["moving"] = True
+
+json.dumps(__vuepyter_output__, allow_nan=False)
+`))
+            if (!isComponentAlive) {
+              return null
+            }
+
+            const text = typeof rawResult === 'string' ? rawResult : String(rawResult)
+            const payloadObj = JSON.parse(text)
+            const notebookCamera = parseNotebookCamera(payloadObj)
+            const nodeUpdates = parseAnimationNodeUpdates(payloadObj)
+
+            let shouldRedraw = false
+            let hasMovingAnimation = false
+
+            if (notebookCamera) {
+              notebookCameraZ.value = notebookCamera.center[2]
+              const shouldApplyNotebookCamera =
+                Date.now() >= notebookCameraOverrideUntil
+                && !isPanningCamera.value
+                && !activeNodeDrag.value
+              if (shouldApplyNotebookCamera) {
+                applyNotebookCamera(notebookCamera)
+                shouldRedraw = true
+              }
+              if (notebookCamera.moving) {
+                hasMovingAnimation = true
+              }
+            }
+
+            for (const update of nodeUpdates) {
+              const applied = applyAnimationNodeUpdate(update)
+              if (applied) {
+                shouldRedraw = true
+              }
+              if (update.moving) {
+                hasMovingAnimation = true
+              }
+            }
+
+            if (payloadObj?.moving === true) {
+              hasMovingAnimation = true
+            }
+
+            if (shouldRedraw) {
+              drawGallery()
+            }
+
+            if (hasMovingAnimation) {
+              animationPlaybackWasActive = true
+              return {
+                requeue: true,
+                delayMs: VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs,
+              }
+            }
+
+            if (animationPlaybackWasActive) {
+              animationPlaybackWasActive = false
+              // Refresh full snapshot once animation playback completes.
+              queueGraphRefresh()
+            }
+          } catch (error) {
+            console.error('Failed to refresh animation playback', error)
+          } finally {
+            destroyPyProxy(rawResult)
+          }
+
+          return null
+        })
+
+        function queueAnimationPlayback(delayMs = VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs) {
+          const waitMs = Number(delayMs)
+          if (Number.isFinite(waitMs) && waitMs <= 0) {
+            void animationPlaybackJob.run()
+            return
+          }
+          animationPlaybackJob.queue(waitMs)
         }
 
         function pointerWorldPosition(event) {
@@ -2988,15 +3349,25 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             if (shouldApplyNotebookCamera) {
               applyNotebookCamera(notebookCamera)
             }
-            if (notebookCamera.moving) {
-              queueGraphRefresh(VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs)
-            }
           } else {
+            animationPlaybackWasActive = false
             notebookCameraName.value = ''
             // Avoid viewport jumps when camera is temporarily unavailable during kernel transitions.
             if (!hadNotebookCamera) {
               fitCameraToWorld(false)
             }
+          }
+
+          if (Array.isArray(graphGallery.value) && graphGallery.value.length > 0) {
+            const playbackDelay = (
+              notebookCamera && notebookCamera.moving
+                ? VISUALIZER_CONSTANTS.sync.graphRefreshWhileNotebookCameraMovingMs
+                : 0
+            )
+            queueAnimationPlayback(playbackDelay)
+          } else {
+            animationPlaybackJob.cancel()
+            animationPlaybackWasActive = false
           }
 
           drawGallery()
@@ -3409,6 +3780,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           window.removeEventListener('resize', onWindowResize)
           graphRefreshJob.cancel()
           cameraSyncJob.cancel()
+          animationPlaybackJob.cancel()
           nodePosSyncJob.cancel()
         })
 
