@@ -88,23 +88,6 @@
       cursor: grabbing;
     }
 
-    .graph-overlay {
-      position: absolute;
-      top: 0.85rem;
-      left: 0.85rem;
-      pointer-events: none;
-      border-radius: 0.55rem;
-      background: rgba(0, 0, 0, 0.36);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      padding: 0.4rem 0.55rem;
-      backdrop-filter: blur(6px);
-      color: #e2e8f0;
-      font-size: 0.68rem;
-      line-height: 1.2;
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-    }
-
     body.is-resizing,
     body.is-resizing * {
       user-select: none;
@@ -133,7 +116,7 @@
   <div id="app"></div>
 
   <script type="module">
-    import { createApp, ref, computed, onBeforeUnmount, onMounted } from 'vue'
+    import { createApp, ref, computed, onBeforeUnmount, onMounted, nextTick } from 'vue'
     import { Vuepyter } from '/vuepyter/dist/index.mjs'
 
     const NOTEBOOK_URL = './graph-theory.ipynb'
@@ -158,6 +141,25 @@ def __vuepyter_is_graph_like__(value):
     except Exception:
         return False
 
+    return True
+
+
+def __vuepyter_is_camera_like__(value):
+    if value is None or isinstance(value, type):
+        return False
+    if not callable(getattr(value, "move_to", None)):
+        return False
+    try:
+        center = getattr(value, "center")
+        height = getattr(value, "height")
+    except Exception:
+        return False
+    if center is None:
+        return False
+    try:
+        float(height)
+    except Exception:
+        return False
     return True
 
 
@@ -262,6 +264,52 @@ def __vuepyter_edge_endpoints__(raw_edge):
     return None, None
 
 
+def __vuepyter_parse_center__(raw_center):
+    if isinstance(raw_center, (list, tuple)) and len(raw_center) >= 3:
+        try:
+            return [float(raw_center[0]), float(raw_center[1]), float(raw_center[2])]
+        except Exception:
+            return [0.0, 0.0, 0.0]
+
+    x = getattr(raw_center, "x", None)
+    y = getattr(raw_center, "y", None)
+    z = getattr(raw_center, "z", None)
+    if x is not None and y is not None and z is not None:
+        try:
+            return [float(x), float(y), float(z)]
+        except Exception:
+            return [0.0, 0.0, 0.0]
+
+    return [0.0, 0.0, 0.0]
+
+
+def __vuepyter_camera_payload__(camera_name, camera_obj):
+    center = __vuepyter_parse_center__(getattr(camera_obj, "center", [0.0, 0.0, 0.0]))
+    height = float(getattr(camera_obj, "height", 480.0))
+    moving = bool(getattr(camera_obj, "_moving", False))
+
+    state_fn = getattr(camera_obj, "state", None)
+    if callable(state_fn):
+        try:
+            state = state_fn()
+        except Exception:
+            state = None
+        if isinstance(state, dict):
+            center = __vuepyter_parse_center__(state.get("center", center))
+            try:
+                height = float(state.get("height", height))
+            except Exception:
+                pass
+            moving = bool(state.get("moving", moving))
+
+    return {
+        "name": camera_name,
+        "center": center,
+        "height": height,
+        "moving": moving,
+    }
+
+
 def __vuepyter_graph_to_payload__(graph_name, graph_obj):
     raw_nodes = __vuepyter_iter_items__(getattr(graph_obj, "nodes", []), limit=512)
     raw_edges = __vuepyter_iter_items__(getattr(graph_obj, "edges", []), limit=1024)
@@ -345,12 +393,16 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 
 graph_payloads = []
 seen_graph_ids = set()
+camera_payload = None
 
 for global_name, global_value in list(globals().items()):
     if global_name.startswith("_"):
         continue
     if callable(global_value) or isinstance(global_value, type):
         continue
+
+    if camera_payload is None and __vuepyter_is_camera_like__(global_value):
+        camera_payload = __vuepyter_camera_payload__(global_name, global_value)
 
     discovered = []
     __vuepyter_walk_for_graphs__(global_value, global_name, depth=2, seen=set(), out=discovered)
@@ -365,6 +417,7 @@ for global_name, global_value in list(globals().items()):
 payload = {
     "ok": True,
     "graphs": graph_payloads,
+    "camera": camera_payload,
 }
 
 json.dumps(payload)
@@ -394,10 +447,14 @@ json.dumps(payload)
         const pyodideRef = ref(null)
         const notebookLoaded = ref(false)
         const kernelReady = ref(false)
-        const hasAutoExecutedFirstCell = ref(false)
-        const autoExecutingFirstCell = ref(false)
+        const hasAutoExecutedBootstrap = ref(false)
+        const autoExecutingBootstrap = ref(false)
         const viewerCanvasRef = ref(null)
+        const vuepyterRef = ref(null)
         const graphGallery = ref([])
+        const cameraControlledByNotebook = ref(false)
+        const notebookCameraName = ref('')
+        const notebookCameraZ = ref(0)
         const isPanningCamera = ref(false)
         const hasMovedCamera = ref(false)
         const cameraScale = ref(1)
@@ -409,6 +466,10 @@ json.dumps(payload)
         let refreshInFlight = false
         let refreshQueued = false
         let refreshTimer = null
+        let cameraSyncTimer = null
+        let cameraSyncInFlight = false
+        let cameraSyncQueued = false
+        let notebookCameraOverrideUntil = 0
 
         let worldBounds = {
           minX: -240,
@@ -817,6 +878,141 @@ json.dumps(payload)
           cameraOffsetY.value = height / 2 - centerY * targetScale
         }
 
+        function parseNotebookCamera(payload) {
+          const raw = payload?.camera
+          if (!raw || typeof raw !== 'object') {
+            return null
+          }
+          const name = typeof raw.name === 'string' && raw.name ? raw.name : ''
+          const center = Array.isArray(raw.center) ? raw.center : []
+          const cx = Number(center[0])
+          const cy = Number(center[1])
+          const cz = Number(center[2])
+          const height = Number(raw.height)
+
+          if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(cz) || !Number.isFinite(height)) {
+            return null
+          }
+
+          return {
+            name,
+            center: [cx, cy, cz],
+            height,
+            moving: !!raw.moving,
+          }
+        }
+
+        function applyNotebookCamera(cameraState) {
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return
+          }
+
+          const { width, height } = metrics
+          const [centerX, centerY] = cameraState.center
+          const desiredHeight = clamp(Math.abs(cameraState.height), 60, 16000)
+          const targetScale = clamp(height / desiredHeight, 0.04, 8)
+
+          cameraScale.value = targetScale
+          cameraOffsetX.value = width / 2 - centerX * targetScale
+          cameraOffsetY.value = height / 2 - centerY * targetScale
+        }
+
+        function getViewportCameraState() {
+          const metrics = getCanvasMetrics()
+          if (!metrics) {
+            return null
+          }
+
+          const { width, height } = metrics
+          const scale = cameraScale.value
+          if (!Number.isFinite(scale) || scale <= 0.0001) {
+            return null
+          }
+
+          const centerX = (width / 2 - cameraOffsetX.value) / scale
+          const centerY = (height / 2 - cameraOffsetY.value) / scale
+          const centerZ = notebookCameraZ.value
+          const worldHeight = height / scale
+
+          if (!Number.isFinite(centerX) || !Number.isFinite(centerY) || !Number.isFinite(centerZ) || !Number.isFinite(worldHeight)) {
+            return null
+          }
+
+          return {
+            center: [centerX, centerY, centerZ],
+            height: worldHeight,
+          }
+        }
+
+        async function syncNotebookCameraState() {
+          if (!cameraControlledByNotebook.value || !notebookCameraName.value) {
+            return
+          }
+
+          if (cameraSyncInFlight) {
+            cameraSyncQueued = true
+            return
+          }
+
+          const instance = pyodideRef.value
+          if (!instance || typeof instance.runPythonAsync !== 'function') {
+            return
+          }
+
+          const next = getViewportCameraState()
+          if (!next) {
+            return
+          }
+
+          const payload = JSON.stringify({
+            name: notebookCameraName.value,
+            center: next.center,
+            height: next.height,
+          })
+
+          cameraSyncInFlight = true
+          try {
+            await instance.runPythonAsync(`
+import json
+__vuepyter_camera_patch__ = json.loads(${JSON.stringify(payload)})
+__vuepyter_camera_obj__ = globals().get(__vuepyter_camera_patch__.get("name"))
+if __vuepyter_camera_obj__ is not None:
+    __center = __vuepyter_camera_patch__.get("center", [0.0, 0.0, 0.0])
+    __height = __vuepyter_camera_patch__.get("height")
+    try:
+        __vuepyter_camera_obj__.center = (float(__center[0]), float(__center[1]), float(__center[2]))
+    except Exception:
+        pass
+    try:
+        __vuepyter_camera_obj__.height = float(__height)
+    except Exception:
+        pass
+`)
+          } catch (error) {
+            console.error('Failed to sync camera to notebook', error)
+          } finally {
+            cameraSyncInFlight = false
+            if (cameraSyncQueued) {
+              cameraSyncQueued = false
+              queueNotebookCameraSync()
+            }
+          }
+        }
+
+        function queueNotebookCameraSync(delayMs = 0) {
+          if (!cameraControlledByNotebook.value || !notebookCameraName.value) {
+            return
+          }
+          if (cameraSyncTimer !== null) {
+            return
+          }
+          cameraSyncTimer = window.setTimeout(() => {
+            cameraSyncTimer = null
+            void syncNotebookCameraState()
+          }, delayMs)
+        }
+
         function drawArrowhead(ctx, source, target, size) {
           const dx = target.x - source.x
           const dy = target.y - source.y
@@ -925,7 +1121,27 @@ json.dumps(payload)
             hasMovedCamera.value = false
           }
 
-          fitCameraToWorld(false)
+          const notebookCamera = parseNotebookCamera(payload)
+          cameraControlledByNotebook.value = notebookCamera !== null
+
+          if (notebookCamera) {
+            notebookCameraName.value = notebookCamera.name
+            notebookCameraZ.value = notebookCamera.center[2]
+            const shouldApplyNotebookCamera =
+              Date.now() >= notebookCameraOverrideUntil
+              && !isPanningCamera.value
+
+            if (shouldApplyNotebookCamera) {
+              applyNotebookCamera(notebookCamera)
+            }
+            if (notebookCamera.moving) {
+              queueGraphRefresh(16)
+            }
+          } else {
+            notebookCameraName.value = ''
+            fitCameraToWorld(false)
+          }
+
           drawGallery()
         }
 
@@ -1009,7 +1225,11 @@ json.dumps(payload)
             const { minLeft, maxLeft } = calculateBounds()
             leftPaneWidth.value = clamp(leftPaneWidth.value, minLeft, maxLeft)
           }
-          drawGallery()
+          if (cameraControlledByNotebook.value) {
+            queueGraphRefresh()
+            drawGallery()
+            return
+          }
           fitCameraToWorld(false)
           drawGallery()
         }
@@ -1026,7 +1246,7 @@ json.dumps(payload)
             }
             notebook.value = data
             notebookLoaded.value = true
-            void maybeAutoExecuteFirstCell()
+            void maybeAutoExecuteBootstrapCells()
           } catch (error) {
             console.error(error)
           }
@@ -1046,37 +1266,90 @@ json.dumps(payload)
           return ''
         }
 
-        async function maybeAutoExecuteFirstCell() {
-          if (hasAutoExecutedFirstCell.value || autoExecutingFirstCell.value) {
+        function getBootstrapCodeCellIndices(limit = 2) {
+          const cells = Array.isArray(notebook.value?.cells) ? notebook.value.cells : []
+          const indices = []
+          for (const [index, cell] of cells.entries()) {
+            if (cell && cell.cell_type === 'code') {
+              indices.push(index)
+            }
+            if (indices.length >= limit) {
+              break
+            }
+          }
+          return indices
+        }
+
+        async function runCodeCellInVuepyter(index) {
+          await nextTick()
+          const editor = vuepyterRef.value
+          if (!editor || typeof editor !== 'object') {
+            return false
+          }
+
+          if (typeof editor.executeCell === 'function') {
+            await editor.executeCell(index)
+            return true
+          }
+
+          const internalExecuteCell = editor?.$?.setupState?.executeCell
+          if (typeof internalExecuteCell === 'function') {
+            await internalExecuteCell(index)
+            return true
+          }
+
+          return false
+        }
+
+        async function executeBootstrapCellsInVuepyter(indices) {
+          if (!Array.isArray(indices) || indices.length === 0) {
+            return true
+          }
+          for (const cellIndex of indices) {
+            const executed = await runCodeCellInVuepyter(cellIndex)
+            if (!executed) {
+              return false
+            }
+          }
+          return true
+        }
+
+        async function maybeAutoExecuteBootstrapCells() {
+          if (hasAutoExecutedBootstrap.value || autoExecutingBootstrap.value) {
             return
           }
           if (!kernelReady.value || !notebookLoaded.value) {
             return
           }
 
-          const firstCodeCell = Array.isArray(notebook.value?.cells)
-            ? notebook.value.cells.find((cell) => cell && cell.cell_type === 'code') ?? null
-            : null
-          const firstCellSource = getCellSource(firstCodeCell)
+          const bootstrapCellIndices = getBootstrapCodeCellIndices(2)
 
-          if (!firstCodeCell || !firstCellSource.trim()) {
-            hasAutoExecutedFirstCell.value = true
+          if (bootstrapCellIndices.length === 0) {
+            hasAutoExecutedBootstrap.value = true
             return
           }
 
-          const instance = pyodideRef.value
-          if (!instance || typeof instance.runPythonAsync !== 'function') {
-            return
-          }
-
-          autoExecutingFirstCell.value = true
+          autoExecutingBootstrap.value = true
           try {
-            await instance.runPythonAsync(firstCellSource)
+            const executedInVuepyter = await executeBootstrapCellsInVuepyter(bootstrapCellIndices)
+            if (!executedInVuepyter) {
+              const instance = pyodideRef.value
+              if (!instance || typeof instance.runPythonAsync !== 'function') {
+                return
+              }
+              for (const cellIndex of bootstrapCellIndices) {
+                const source = getCellSource(notebook.value?.cells?.[cellIndex])
+                if (!source.trim()) {
+                  continue
+                }
+                await instance.runPythonAsync(source)
+              }
+            }
           } catch (error) {
-            console.error('Auto execute first cell failed', error)
+            console.error('Auto execute bootstrap cells failed', error)
           } finally {
-            autoExecutingFirstCell.value = false
-            hasAutoExecutedFirstCell.value = true
+            autoExecutingBootstrap.value = false
+            hasAutoExecutedBootstrap.value = true
             queueGraphRefresh()
           }
         }
@@ -1104,7 +1377,9 @@ json.dumps(payload)
           cameraOffsetX.value += dx
           cameraOffsetY.value += dy
           hasMovedCamera.value = true
+          notebookCameraOverrideUntil = Date.now() + 140
           drawGallery()
+          queueNotebookCameraSync(32)
         }
 
         function onCanvasPointerUp(event) {
@@ -1119,6 +1394,8 @@ json.dumps(payload)
               // Ignore release errors when pointer capture has already ended.
             }
           }
+          notebookCameraOverrideUntil = Date.now() + 140
+          queueNotebookCameraSync()
         }
 
         function onCanvasWheel(event) {
@@ -1143,10 +1420,16 @@ json.dumps(payload)
           cameraOffsetX.value = localX - worldX * nextScale
           cameraOffsetY.value = localY - worldY * nextScale
           hasMovedCamera.value = true
+          notebookCameraOverrideUntil = Date.now() + 140
           drawGallery()
+          queueNotebookCameraSync(32)
         }
 
         function resetGraphCamera() {
+          if (cameraControlledByNotebook.value) {
+            queueGraphRefresh()
+            return
+          }
           hasMovedCamera.value = false
           fitCameraToWorld(true)
           drawGallery()
@@ -1155,7 +1438,7 @@ json.dumps(payload)
         function onKernelReady(payload) {
           pyodideRef.value = payload?.pyodide ?? null
           kernelReady.value = true
-          void maybeAutoExecuteFirstCell()
+          void maybeAutoExecuteBootstrapCells()
           queueGraphRefresh()
         }
 
@@ -1168,16 +1451,6 @@ json.dumps(payload)
             queueGraphRefresh(80)
           }
         }
-
-        const graphCountLabel = computed(() => {
-          const count = graphGallery.value.length
-          if (count === 1) {
-            return '1 graph detected'
-          }
-          return `${count} graphs detected`
-        })
-
-        const hasGraphs = computed(() => graphGallery.value.length > 0)
 
         const pageStyle = computed(() => ({
           '--left-pane-width': `${leftPaneWidth.value}px`,
@@ -1199,6 +1472,10 @@ json.dumps(payload)
             clearTimeout(refreshTimer)
             refreshTimer = null
           }
+          if (cameraSyncTimer !== null) {
+            clearTimeout(cameraSyncTimer)
+            cameraSyncTimer = null
+          }
         })
 
         return {
@@ -1208,6 +1485,7 @@ json.dumps(payload)
           startResize,
           resetSplit,
           viewerCanvasRef,
+          vuepyterRef,
           isPanningCamera,
           onCanvasPointerDown,
           onCanvasPointerMove,
@@ -1217,8 +1495,6 @@ json.dumps(payload)
           onKernelReady,
           onCellComplete,
           onWorkspaceSync,
-          graphCountLabel,
-          hasGraphs,
         }
       },
       template: `
@@ -1237,7 +1513,6 @@ json.dumps(payload)
                   @pointerleave="onCanvasPointerUp"
                   @dblclick="resetGraphCamera"
                 />
-                <div v-if="hasGraphs" class="graph-overlay" aria-live="polite">{{ graphCountLabel }}</div>
               </section>
             </section>
 
@@ -1252,6 +1527,7 @@ json.dumps(payload)
 
             <section class="right-pane">
               <Vuepyter
+                ref="vuepyterRef"
                 class="editor-fill"
                 v-model="notebook"
                 :autosave-interval="1000"
