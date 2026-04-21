@@ -120,7 +120,7 @@
   <div id="app"></div>
 
   <script type="module">
-    import { createApp, ref, computed, onBeforeUnmount, onMounted, nextTick } from 'vue'
+    import { createApp, ref, computed, onBeforeUnmount, onMounted } from 'vue'
     import { Vuepyter } from '/vuepyter/dist/index.mjs'
 
     const NOTEBOOK_URL = './graph-theory.ipynb'
@@ -818,8 +818,6 @@ json.dumps(payload, allow_nan=False)
         const pyodideRef = ref(null)
         const notebookLoaded = ref(false)
         const kernelReady = ref(false)
-        const hasAutoExecutedBootstrap = ref(false)
-        const autoExecutingBootstrap = ref(false)
         const viewerCanvasRef = ref(null)
         const vuepyterRef = ref(null)
         const graphGallery = ref([])
@@ -4184,111 +4182,8 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             }
             notebook.value = data
             notebookLoaded.value = true
-            void maybeAutoExecuteBootstrapCells()
           } catch (error) {
             console.error(error)
-          }
-        }
-
-        function getCellSource(cell) {
-          if (!cell || typeof cell !== 'object') {
-            return ''
-          }
-          const source = cell.source
-          if (Array.isArray(source)) {
-            return source.join('')
-          }
-          if (typeof source === 'string') {
-            return source
-          }
-          return ''
-        }
-
-        function getBootstrapCodeCellIndices(limit = 2) {
-          const cells = Array.isArray(notebook.value?.cells) ? notebook.value.cells : []
-          const indices = []
-          for (const [index, cell] of cells.entries()) {
-            if (cell && cell.cell_type === 'code') {
-              indices.push(index)
-            }
-            if (indices.length >= limit) {
-              break
-            }
-          }
-          return indices
-        }
-
-        async function runCodeCellInVuepyter(index) {
-          await nextTick()
-          const editor = vuepyterRef.value
-          if (!editor || typeof editor !== 'object') {
-            return false
-          }
-
-          if (typeof editor.executeCell === 'function') {
-            await editor.executeCell(index)
-            return true
-          }
-
-          const internalExecuteCell = editor?.$?.setupState?.executeCell
-          if (typeof internalExecuteCell === 'function') {
-            await internalExecuteCell(index)
-            return true
-          }
-
-          return false
-        }
-
-        async function executeBootstrapCellsInVuepyter(indices) {
-          if (!Array.isArray(indices) || indices.length === 0) {
-            return true
-          }
-          for (const cellIndex of indices) {
-            const executed = await runCodeCellInVuepyter(cellIndex)
-            if (!executed) {
-              return false
-            }
-          }
-          return true
-        }
-
-        async function maybeAutoExecuteBootstrapCells() {
-          if (hasAutoExecutedBootstrap.value || autoExecutingBootstrap.value) {
-            return
-          }
-          if (!kernelReady.value || !notebookLoaded.value) {
-            return
-          }
-
-          const bootstrapCellIndices = getBootstrapCodeCellIndices(2)
-
-          if (bootstrapCellIndices.length === 0) {
-            hasAutoExecutedBootstrap.value = true
-            return
-          }
-
-          autoExecutingBootstrap.value = true
-          try {
-            const executedInVuepyter = await executeBootstrapCellsInVuepyter(bootstrapCellIndices)
-            if (!executedInVuepyter) {
-              const instance = pyodideRef.value
-              if (!instance || typeof instance.runPythonAsync !== 'function') {
-                return
-              }
-              for (const cellIndex of bootstrapCellIndices) {
-                const source = getCellSource(notebook.value?.cells?.[cellIndex])
-                if (!source.trim()) {
-                  continue
-                }
-                await runSerializedKernelTask(() => instance.runPythonAsync(source))
-              }
-            }
-          } catch (error) {
-            console.error('Auto execute bootstrap cells failed', error)
-          } finally {
-            autoExecutingBootstrap.value = false
-            hasAutoExecutedBootstrap.value = true
-            queueGraphRefresh()
           }
         }
 
@@ -4451,7 +4346,6 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         function onKernelReady(payload) {
           pyodideRef.value = payload?.pyodide ?? null
           kernelReady.value = true
-          void maybeAutoExecuteBootstrapCells()
           queueGraphRefresh()
         }
 
