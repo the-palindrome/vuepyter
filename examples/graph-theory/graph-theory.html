@@ -255,6 +255,11 @@
 import json
 import math
 
+# Snapshot contract:
+# - Discover graph/camera/canvas objects from globals.
+# - Normalize to JSON-safe payload consumed by normalizeGraphPayload().
+# - Preserve stable identity fields so drag and animation patches can round-trip.
+
 
 def __vuepyter_finite_float__(value, default=None):
     try:
@@ -638,6 +643,8 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
     nodes = []
     edges = []
 
+    # Identity maps are ordered by confidence:
+    # object id (uid) -> explicit/logical id -> label fallback.
     node_ids_by_object = {}
     node_ids_by_identity = {}
     node_ids_by_label = {}
@@ -673,6 +680,10 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
             except Exception:
                 label = None
 
+        # Fallback order:
+        # 1) identity from node.id when present
+        # 2) identity from label/string form when id is absent
+        # 3) label backfilled from identity so every node has display text
         if identity is None and isinstance(label, str) and label:
             identity = label
         if (label is None or label == "") and identity is not None:
@@ -692,6 +703,8 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 
         node_identity, label = __vuepyter_node_identity_and_label__(raw)
 
+        # Canonicalization invariant: one payload node per logical node, even when edges
+        # reference endpoint alias objects distinct from graph.nodes entries.
         if object_id is not None and object_id in node_ids_by_object:
             existing = node_ids_by_object[object_id]
             existing_payload = node_payloads_by_id.get(existing)
@@ -785,6 +798,8 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
     for raw_node_index, raw_node in enumerate(raw_nodes):
         ensure_node(raw_node, node_index=raw_node_index)
 
+    # Edge endpoints may be lightweight aliases; resolve through ensure_node() so
+    # edge source/target always point to canonical node ids from this payload.
     for raw_edge_index, raw_edge in enumerate(raw_edges):
         left, right = __vuepyter_edge_endpoints__(raw_edge)
         source_id = ensure_node(left, node_index=None)
@@ -940,6 +955,8 @@ json.dumps(payload, allow_nan=False)
         }
 
         function createQueuedAsyncJob(executor) {
+          // Shared coalescing scheduler for refresh/sync jobs.
+          // Invariant: only one executor run is in-flight; concurrent triggers collapse into reruns.
           let timer = null
           let timerDeadline = 0
           let inFlight = false
@@ -1104,6 +1121,7 @@ json.dumps(payload, allow_nan=False)
         }
 
         function runSerializedKernelTask(task) {
+          // Kernel mutations are serialized to avoid snapshot/patch race conditions.
           const run = async () => {
             if (!isComponentAlive) {
               return null
@@ -1139,6 +1157,8 @@ json.dumps(payload, allow_nan=False)
         }
 
         function normalizeGraphPayload(payload) {
+          // Snapshot normalization boundary.
+          // Input: raw Python payload. Output: render-ready graph models with finite numeric fields.
           if (!payload || typeof payload !== 'object' || !Array.isArray(payload.graphs)) {
             return []
           }
@@ -1172,6 +1192,7 @@ json.dumps(payload, allow_nan=False)
                 continue
               }
               const id = rawNode.id == null ? '' : String(rawNode.id)
+              // `id` is the canonical per-graph node key used by layout and edge joins.
               if (!id || nodeIds.has(id)) {
                 continue
               }
@@ -1207,6 +1228,7 @@ json.dumps(payload, allow_nan=False)
                 nodeIndex: Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null,
                 displayLabel,
                 pos,
+                // True only when position came from kernel payload, not local layout.
                 posProvided: pos !== null,
               })
               nodeIds.add(id)
@@ -1392,6 +1414,7 @@ json.dumps(payload, allow_nan=False)
         }
 
         function layoutSingleGraph(graph) {
+          // Local-graph layout stage. Explicit node.pos values are treated as fixed anchors.
           const nodes = graph.nodes
           const edges = graph.edges
           const total = nodes.length
@@ -1533,6 +1556,8 @@ json.dumps(payload, allow_nan=False)
         }
 
         function rebuildWorldLayout(previousRenderByGraphName = null) {
+          // World-layout stage: place each local graph into gallery coordinates and
+          // materialize graph.render, the draw-ready model consumed by drawGallery().
           const graphs = graphGallery.value
           if (!Array.isArray(graphs) || graphs.length === 0) {
             worldBounds = { ...VISUALIZER_CONSTANTS.viewport.defaultWorldBounds }
@@ -1587,6 +1612,7 @@ json.dumps(payload, allow_nan=False)
                     String(candidate?.label ?? '') === node.label
                   )) || null
                 }
+                // Matching order mirrors patch/sync identity semantics: uid -> id -> index -> label.
                 if (!previousNode) {
                   continue
                 }
@@ -1843,6 +1869,7 @@ json.dumps(payload, allow_nan=False)
           }
         }
 
+        // Outbound viewport -> notebook camera sync.
         const cameraSyncJob = createQueuedAsyncJob(async () => {
           if (!cameraControlledByNotebook.value || !notebookCameraName.value) {
             return null
@@ -1869,6 +1896,10 @@ json.dumps(payload, allow_nan=False)
 import json
 import math
 import time
+
+# Camera patch contract:
+# - Apply viewport camera center/height to the notebook camera object.
+# - Reset known animation internals so stale motion does not override patched state.
 
 
 def __vuepyter_finite_float__(value):
@@ -2149,6 +2180,7 @@ if __vuepyter_camera_obj__ is not None:
           return updateEdgeStyleInRender(update)
         }
 
+        // Incremental animation poller between full snapshots.
         const animationPlaybackJob = createQueuedAsyncJob(async () => {
           const instance = pyodideRef.value
           if (!instance || typeof instance.runPythonAsync !== 'function') {
@@ -2182,6 +2214,10 @@ if __vuepyter_camera_obj__ is not None:
             rawResult = await runSerializedKernelTask(() => instance.runPythonAsync(`
 import json
 import math
+
+# Animation probe contract:
+# - Emit camera/node/edge deltas only for requested graphs.
+# - Include multiple identity handles so JS can match updates across transient reshapes.
 
 
 def __vuepyter_finite_float__(value):
@@ -2276,6 +2312,7 @@ def __vuepyter_node_ref_for_endpoint__(endpoint, by_object_id, by_id, by_label):
     except Exception:
         endpoint_object_id = None
 
+    # Endpoint identity fallback order mirrors snapshot + patch flows.
     if endpoint_object_id is not None:
         ref = by_object_id.get(endpoint_object_id)
         if isinstance(ref, dict):
@@ -2867,6 +2904,8 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           const nodeIndex = identity.nodeIndex
           const nodeLabel = typeof identity.nodeLabel === 'string' ? identity.nodeLabel : ''
 
+          // Node identity precedence is intentionally strict -> fuzzy:
+          // uid -> id -> nodeIndex (guarded by id) -> label.
           if (nodeUid) {
             const byUid = graph.render.nodes.find((candidate) => candidate?.uid === nodeUid)
             if (byUid) {
@@ -3059,6 +3098,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           node.localX = update.worldX - render.offsetX
           node.localY = update.worldY - render.offsetY
 
+          // Keep model and render trees in sync so the next snapshot/layout preserves drag state.
           const modelNode = findModelNodeForRenderedNode(graph, node)
           if (modelNode) {
             modelNode.pos = [node.localX, node.localY]
@@ -3227,6 +3267,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
         }
 
         async function syncNotebookNodePositions() {
+          // Flush pending local node positions to kernel and only drop entries after explicit ack.
           if (nodePosSyncInFlight) {
             return pendingNodePosUpdates.size > 0
               ? {
@@ -3281,6 +3322,11 @@ json.dumps(__vuepyter_output__, allow_nan=False)
 import json
 import math
 import ast
+
+# Node-position patch contract:
+# - Resolve graph by uid first, then by graph path/name.
+# - Resolve node by uid -> id -> index -> generated n{index} -> label.
+# - Return only applied keys so JS can keep unsynced entries pending.
 
 
 def __vuepyter_finite_float__(value):
@@ -3599,6 +3645,7 @@ def __vuepyter_graph_nodes_for_patch__(graph_obj):
             __object_id = None
         __identity, __label = __node_identity_and_label(raw)
 
+        # Match confidence order mirrors snapshot emitter identity policy.
         if __object_id is not None and __object_id in __node_slots_by_object:
             return __node_slots_by_object[__object_id]
 
@@ -3834,6 +3881,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           if (!Number.isFinite(px) || !Number.isFinite(py)) {
             return
           }
+          // Coalesce repeated drags for the same logical node into a single latest pending entry.
           const key = `${graphUid || graphName}::${nodeUid || nodeId}`
           const now = Date.now()
           pendingNodePosUpdates.set(key, {
@@ -3862,6 +3910,8 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             return
           }
 
+          // Local override flow: keep pending drag positions visible until kernel confirms
+          // or the override window expires, avoiding snap-back on intermediate snapshots.
           const now = Date.now()
           for (const [key, pending] of pendingNodePosUpdates.entries()) {
             if (!pending || typeof pending !== 'object') {
@@ -3970,6 +4020,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
             const modelNodes = Array.isArray(graph.nodes) ? graph.nodes : []
 
+            // First snapshot often has layout-only positions; seed them back to kernel once.
             for (const node of renderNodes) {
               if (!node || node.posProvided === true) {
                 continue
@@ -4067,6 +4118,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         }
 
         function clearNodeLabelOverlay() {
+          // Remove all overlay DOM nodes; map ownership is authoritative for reuse/cleanup.
           for (const labelElement of nodeLabelElements.values()) {
             labelElement.remove()
           }
@@ -4091,6 +4143,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           if (!expression) {
             return null
           }
+          // Cache by normalized expression so repeated labels avoid KaTeX re-render work.
           if (latexLabelMarkupCache.has(expression)) {
             return latexLabelMarkupCache.get(expression)
           }
@@ -4114,6 +4167,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           const cachedMode = labelElement.dataset.renderMode ?? ''
           const latexMarkup = renderLatexLabelMarkup(labelText)
           if (latexMarkup) {
+            // Avoid rewriting DOM when neither text nor render mode changed.
             if (cachedMode !== 'latex' || cachedLabel !== labelText) {
               labelElement.innerHTML = latexMarkup
               labelElement.dataset.renderMode = 'latex'
@@ -4129,6 +4183,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
         }
 
         function syncNodeLabelOverlay() {
+          // Label overlay pass runs after canvas draw and mirrors current world->screen camera transform.
           const overlayElement = nodeLabelOverlayRef.value
           if (!overlayElement) {
             clearNodeLabelOverlay()
@@ -4181,6 +4236,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               const nodeKey = `${graphKey}::${nodeId}`
               activeNodeKeys.add(nodeKey)
 
+              // Reuse a single DOM node per graph/node key across frames.
               let labelElement = nodeLabelElements.get(nodeKey)
               if (!labelElement) {
                 labelElement = document.createElement('div')
@@ -4216,6 +4272,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             if (activeNodeKeys.has(nodeKey)) {
               continue
             }
+            // Clean up labels for nodes/graphs that disappeared in the latest render.
             labelElement.remove()
             nodeLabelElements.delete(nodeKey)
           }
@@ -4253,6 +4310,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           ctx.lineCap = 'round'
           ctx.lineJoin = 'round'
 
+          // Paint order keeps geometry under labels and avoids overdraw artifacts.
           for (const graph of graphs) {
             if (!graph.render) {
               continue
@@ -4317,6 +4375,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           }
 
           ctx.restore()
+          // Node labels are rendered in DOM (for KaTeX support), synced after canvas paint.
           syncNodeLabelOverlay()
         }
 
@@ -4350,6 +4409,8 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           }
 
           const previousCount = graphGallery.value.length
+          // Snapshot pipeline: normalize payload -> reapply pending local positions ->
+          // rebuild world layout/render model -> prune stale render memory.
           graphGallery.value = normalizeGraphPayload(payload)
           pruneStalePendingNodePosUpdates()
           applyPendingNodePosToGraphs(graphGallery.value)
@@ -4729,6 +4790,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
 
         onBeforeUnmount(() => {
           isComponentAlive = false
+          // Overlay/cache cleanup is explicit because labels are DOM nodes outside canvas state.
           clearNodeLabelOverlay()
           latexLabelMarkupCache.clear()
           stopResize()
