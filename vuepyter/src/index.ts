@@ -25,6 +25,9 @@ export type {
   NotebookDocument,
   SerializedNotebookDocument,
   PyodideInterface,
+  VuepyterLoadingOverlay,
+  VuepyterLoadingPhase,
+  VuepyterLoadingSlotProps,
   VuepyterModelValue,
   VuepyterProps,
 } from './types'

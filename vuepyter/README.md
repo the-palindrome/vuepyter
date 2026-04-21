@@ -76,6 +76,36 @@ const notebook = ref({
 
 Vuepyter emits serialized notebook documents from `update:modelValue`. If you want your bound state shape to stay stable in TypeScript, initialize the notebook as a serialized document from the start.
 
+## Loading overlay
+
+Vuepyter can render a built-in loading overlay during kernel startup and while your app is still loading notebook JSON.
+
+Use `loading` for app-controlled loading state (for example, a notebook fetch before assigning `v-model`). Keep `loading-overlay="auto"` to combine external loading with internal kernel loading.
+
+```vue
+<Vuepyter
+  v-model="notebook"
+  :loading="isNotebookLoading"
+  loading-overlay="auto"
+  loading-text="Loading notebook..."
+  :loading-block-interaction="true"
+/>
+```
+
+You can replace the overlay UI with the `loading` slot:
+
+```vue
+<Vuepyter v-model="notebook" :loading="isNotebookLoading">
+  <template #loading="{ phase, text, status }">
+    <div class="my-overlay">
+      <div class="spinner" />
+      <p>{{ text || (phase === 'kernel' ? 'Initializing Python...' : 'Loading notebook...') }}</p>
+      <small>{{ status }}</small>
+    </div>
+  </template>
+</Vuepyter>
+```
+
 ## Register as a plugin
 
 Vuepyter also exposes a default plugin export that registers the component globally. This is useful when you want to install it once on the app instance:

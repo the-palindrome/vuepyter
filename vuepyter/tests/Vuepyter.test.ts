@@ -1,4 +1,4 @@
-import { defineComponent, nextTick } from 'vue'
+import { defineComponent, h, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import Vuepyter from '@/components/Vuepyter.vue'
@@ -43,6 +43,30 @@ function createFakePyodide() {
   }
 }
 
+function createDeferred<T>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => {}
+  let reject: (reason?: unknown) => void = () => {}
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+
+  return {
+    promise,
+    resolve,
+    reject,
+  }
+}
+
+const loadingSlot = (slotProps: Record<string, unknown>) =>
+  h('div', {
+    'data-testid': 'loading-slot',
+    'data-phase': String(slotProps.phase ?? ''),
+    'data-text': String(slotProps.text ?? ''),
+    'data-status': String(slotProps.status ?? ''),
+    'data-blocking': String(slotProps.blocking ?? ''),
+  })
+
 const NotebookStub = defineComponent({
   name: 'Notebook',
   emits: ['cellSource', 'cellExecute', 'save', 'update:activeIndex', 'cellAdd', 'cellDelete', 'cellMove', 'cellTag'],
@@ -81,6 +105,150 @@ const EditorBarStub = defineComponent({
 })
 
 describe('Vuepyter', () => {
+  it('shows loading overlay in auto mode during kernel init and hides it after ready', async () => {
+    const fake = createFakePyodide()
+    const deferred = createDeferred<typeof fake>()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => deferred.promise))
+
+    const wrapper = mount(Vuepyter, {
+      global: {
+        stubs: {
+          Notebook: NotebookStub,
+          EditorBar: EditorBarStub,
+        },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flush()
+    const loadingWhileInitializing = wrapper.find('[data-testid="loading-slot"]')
+    expect(loadingWhileInitializing.exists()).toBe(true)
+    expect(loadingWhileInitializing.attributes('data-phase')).toBe('kernel')
+
+    deferred.resolve(fake)
+    const ready = await waitForEvent(() => wrapper.emitted('ready'))
+    expect(ready).toBeTruthy()
+    await flush()
+
+    expect(wrapper.find('[data-testid="loading-slot"]').exists()).toBe(false)
+  })
+
+  it('suppresses loading overlay when loadingOverlay is never', async () => {
+    const deferred = createDeferred<ReturnType<typeof createFakePyodide>>()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => deferred.promise))
+
+    const wrapper = mount(Vuepyter, {
+      props: {
+        loadingOverlay: 'never',
+      },
+      global: {
+        stubs: {
+          Notebook: NotebookStub,
+          EditorBar: EditorBarStub,
+        },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flush()
+    expect(wrapper.find('[data-testid="loading-slot"]').exists()).toBe(false)
+
+    deferred.resolve(createFakePyodide())
+    const ready = await waitForEvent(() => wrapper.emitted('ready'))
+    expect(ready).toBeTruthy()
+  })
+
+  it('shows loading overlay when external loading is true even after kernel is ready', async () => {
+    vi.stubGlobal('loadPyodide', vi.fn(async () => createFakePyodide()))
+
+    const wrapper = mount(Vuepyter, {
+      props: {
+        loading: false,
+      },
+      global: {
+        stubs: {
+          Notebook: NotebookStub,
+          EditorBar: EditorBarStub,
+        },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    const ready = await waitForEvent(() => wrapper.emitted('ready'))
+    expect(ready).toBeTruthy()
+    await flush()
+    expect(wrapper.find('[data-testid="loading-slot"]').exists()).toBe(false)
+
+    await wrapper.setProps({ loading: true })
+    await flush()
+    const forcedLoading = wrapper.find('[data-testid="loading-slot"]')
+    expect(forcedLoading.exists()).toBe(true)
+    expect(forcedLoading.attributes('data-phase')).toBe('external')
+  })
+
+  it('renders custom loading slot with useful slot props', async () => {
+    const deferred = createDeferred<ReturnType<typeof createFakePyodide>>()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => deferred.promise))
+
+    const wrapper = mount(Vuepyter, {
+      props: {
+        loadingText: 'Starting notebook...',
+      },
+      global: {
+        stubs: {
+          Notebook: NotebookStub,
+          EditorBar: EditorBarStub,
+        },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flush()
+    const loading = wrapper.get('[data-testid="loading-slot"]')
+    expect(loading.attributes('data-phase')).toBe('kernel')
+    expect(loading.attributes('data-text')).toBe('Starting notebook...')
+    expect(loading.attributes('data-status')).toBe('loading')
+    expect(loading.attributes('data-blocking')).toBe('true')
+
+    deferred.resolve(createFakePyodide())
+    await waitForEvent(() => wrapper.emitted('ready'))
+  })
+
+  it('marks loading overlay as non-blocking when loadingBlockInteraction is false', async () => {
+    const deferred = createDeferred<ReturnType<typeof createFakePyodide>>()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => deferred.promise))
+
+    const wrapper = mount(Vuepyter, {
+      props: {
+        loadingBlockInteraction: false,
+      },
+      global: {
+        stubs: {
+          Notebook: NotebookStub,
+          EditorBar: EditorBarStub,
+        },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flush()
+    const loading = wrapper.get('[data-testid="loading-slot"]')
+    expect(loading.attributes('data-blocking')).toBe('false')
+
+    deferred.resolve(createFakePyodide())
+    await waitForEvent(() => wrapper.emitted('ready'))
+  })
+
   it('executes a preamble before the notebook becomes ready', async () => {
     const fake = createFakePyodide()
     vi.stubGlobal('loadPyodide', vi.fn(async () => fake))

@@ -248,6 +248,15 @@ export interface VuepyterLocale {
 }
 
 export type VuepyterTheme = 'light' | 'dark' | ThemeVariables
+export type VuepyterLoadingOverlay = 'auto' | 'always' | 'never'
+export type VuepyterLoadingPhase = 'kernel' | 'external' | 'always'
+
+export interface VuepyterLoadingSlotProps {
+  phase: VuepyterLoadingPhase
+  text: string
+  status: KernelStatus
+  blocking: boolean
+}
 
 export interface VuepyterProps {
   modelValue?: VuepyterModelValue | null
@@ -266,6 +275,10 @@ export interface VuepyterProps {
   locale?: Partial<VuepyterLocale> | Record<string, string>
   keymap?: Partial<KeymapConfig>
   editorOptions?: Partial<CodeEditorProps>
+  loading?: boolean
+  loadingOverlay?: VuepyterLoadingOverlay
+  loadingText?: string
+  loadingBlockInteraction?: boolean
 }
 
 export interface PyodideGlobalsLike {

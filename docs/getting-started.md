@@ -66,6 +66,45 @@ const notebook = ref<SerializedNotebookDocument>({
 
 Vuepyter fills in missing notebook structure as needed. If you pass a partial notebook or omit cell ids, the component normalizes the document before it renders.
 
+## Show a Loading Overlay
+
+Vuepyter can show a built-in loading overlay while the kernel starts. That internal kernel state is automatic, so you do not need extra wiring for it.
+
+Use the `loading` prop for app-controlled loading, such as fetching notebook JSON before assigning `v-model`. In most apps, notebook document loading lives in parent state, so pipe that state into `loading`.
+
+```vue
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+
+const notebook = ref(null)
+const notebookLoading = ref(true)
+
+onMounted(async () => {
+  const response = await fetch('/api/notebooks/demo.ipynb')
+  notebook.value = await response.json()
+  notebookLoading.value = false
+})
+</script>
+
+<template>
+  <Vuepyter
+    v-model="notebook"
+    :loading="notebookLoading"
+    loading-overlay="auto"
+    loading-text="Loading notebook..."
+    :loading-block-interaction="true"
+  />
+</template>
+```
+
+Overlay behavior is controlled by `loadingOverlay`:
+
+- `auto`: show when internal kernel loading is active or when `loading` is `true`.
+- `always`: always show the overlay.
+- `never`: never show the built-in overlay.
+
+Use `loadingText` to set a default message, and set `loadingBlockInteraction` to `false` when you want the overlay to be visible but still allow interaction.
+
 ## Understand the Save Model
 
 Vuepyter supports two save paths:

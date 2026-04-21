@@ -18,6 +18,8 @@ import type {
   KeymapConfig,
   NotebookCell,
   SerializedNotebookDocument,
+  VuepyterLoadingOverlay,
+  VuepyterLoadingPhase,
   VuepyterModelValue,
 } from '../types'
 import EditorBar from './EditorBar.vue'
@@ -41,6 +43,10 @@ const props = withDefaults(
     locale?: Record<string, string>
     keymap?: Partial<KeymapConfig>
     editorOptions?: Partial<CodeEditorProps>
+    loading?: boolean
+    loadingOverlay?: VuepyterLoadingOverlay
+    loadingText?: string
+    loadingBlockInteraction?: boolean
   }>(),
   {
     modelValue: null,
@@ -59,6 +65,10 @@ const props = withDefaults(
     locale: () => ({}),
     keymap: () => ({}),
     editorOptions: () => ({}),
+    loading: false,
+    loadingOverlay: 'auto',
+    loadingText: 'Loading notebook...',
+    loadingBlockInteraction: true,
   },
 )
 
@@ -139,6 +149,44 @@ useVuepyterProvide({
   pyodide: kernel.pyodide,
   workspace: kernel.workspace,
   status: kernel.status,
+})
+
+const resolvedLoadingOverlay = computed<VuepyterLoadingOverlay>(() => {
+  const mode = props.loadingOverlay
+  if (mode === 'always' || mode === 'never') {
+    return mode
+  }
+  return 'auto'
+})
+
+const isExternalLoading = computed(() => props.loading === true)
+const isKernelLoading = computed(() => kernel.status.value === 'loading')
+const loadingOverlayBlocksInteraction = computed(() => props.loadingBlockInteraction ?? true)
+
+const loadingPhase = computed<VuepyterLoadingPhase | null>(() => {
+  if (resolvedLoadingOverlay.value === 'always') {
+    return 'always'
+  }
+  if (resolvedLoadingOverlay.value === 'never') {
+    return null
+  }
+  if (isExternalLoading.value) {
+    return 'external'
+  }
+  if (isKernelLoading.value) {
+    return 'kernel'
+  }
+  return null
+})
+
+const activeLoadingPhase = computed<VuepyterLoadingPhase>(() => loadingPhase.value ?? 'external')
+const showLoadingOverlay = computed(() => loadingPhase.value !== null)
+const resolvedLoadingText = computed(() => {
+  const customText = props.loadingText?.trim()
+  if (customText) {
+    return customText
+  }
+  return 'Loading notebook...'
 })
 
 const isDark = computed(() => props.theme === 'dark')
@@ -770,6 +818,26 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
         <template v-if="slots['bar-right']" #bar-right><slot name="bar-right" /></template>
         <template v-if="slots['bar-append']" #bar-append><slot name="bar-append" /></template>
       </EditorBar>
+
+      <div
+        v-if="showLoadingOverlay"
+        class="vuepyter-loading-overlay"
+        :class="{ 'is-pass-through': !loadingOverlayBlocksInteraction }"
+        :aria-busy="showLoadingOverlay"
+      >
+        <slot
+          name="loading"
+          :phase="activeLoadingPhase"
+          :text="resolvedLoadingText"
+          :status="kernel.status.value"
+          :blocking="loadingOverlayBlocksInteraction"
+        >
+          <div class="vuepyter-loading-indicator" role="status" aria-live="polite">
+            <span class="vuepyter-loading-spinner" aria-hidden="true" />
+            <span class="vuepyter-loading-text">{{ resolvedLoadingText }}</span>
+          </div>
+        </slot>
+      </div>
     </div>
   </div>
 </template>
@@ -792,5 +860,58 @@ const onCellExecute = async (payload: { index: number; advance: boolean; insertB
   gap: 0.75rem;
   width: min(100%, var(--vuepyter-content-max-width, 1040px));
   margin: 0 auto;
+  position: relative;
+}
+
+.vuepyter-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  box-sizing: border-box;
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--vuepyter-bg) 60%, transparent);
+  backdrop-filter: blur(8px) saturate(120%);
+  -webkit-backdrop-filter: blur(8px) saturate(120%);
+  pointer-events: auto;
+}
+
+.vuepyter-loading-overlay.is-pass-through {
+  pointer-events: none;
+}
+
+.vuepyter-loading-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--vuepyter-cell-border) 70%, transparent);
+  background: color-mix(in srgb, var(--vuepyter-cell-bg) 86%, transparent);
+  color: var(--vuepyter-text-secondary);
+  box-shadow: 0 10px 24px rgb(15 23 42 / 18%);
+}
+
+.vuepyter-loading-spinner {
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--vuepyter-text-secondary) 30%, transparent);
+  border-top-color: var(--vuepyter-text);
+  animation: vuepyter-spin 0.9s linear infinite;
+}
+
+.vuepyter-loading-text {
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+@keyframes vuepyter-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 </style>
