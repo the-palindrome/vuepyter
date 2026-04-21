@@ -1595,24 +1595,13 @@ json.dumps(payload, allow_nan=False)
                 if (typeof node.uid === 'string' && node.uid) {
                   previousNode = previousByUid.get(node.uid) || null
                 }
+                if (!previousNode && node.id != null) {
+                  previousNode = previousById.get(String(node.id)) || null
+                }
                 if (!previousNode) {
-                  previousNode = previousById.get(node.id) || null
+                  previousNode = findNodeByIdentity(previousRender.nodes, nodeIdentityFromNode(node))
                 }
-                if (!previousNode
-                  && Number.isInteger(node.nodeIndex)
-                  && node.nodeIndex >= 0
-                  && node.nodeIndex < previousRender.nodes.length) {
-                  const candidate = previousRender.nodes[node.nodeIndex]
-                  if (candidate && candidate.id === node.id) {
-                    previousNode = candidate
-                  }
-                }
-                if (!previousNode && typeof node.label === 'string' && node.label) {
-                  previousNode = previousRender.nodes.find((candidate) => (
-                    String(candidate?.label ?? '') === node.label
-                  )) || null
-                }
-                // Matching order mirrors patch/sync identity semantics: uid -> id -> index -> label.
+                // Matching order mirrors strict patch/sync identity semantics: uid -> id -> index.
                 if (!previousNode) {
                   continue
                 }
@@ -1686,8 +1675,6 @@ json.dumps(payload, allow_nan=False)
                   targetUid: typeof target.uid === 'string' ? target.uid : '',
                   sourceNodeIndex: Number.isInteger(source.nodeIndex) ? source.nodeIndex : null,
                   targetNodeIndex: Number.isInteger(target.nodeIndex) ? target.nodeIndex : null,
-                  sourceLabel: typeof source.label === 'string' ? source.label : '',
-                  targetLabel: typeof target.label === 'string' ? target.label : '',
                   color: edgeColor(edge),
                   width,
                   arrowSize: edgeArrowSize(width),
@@ -2040,7 +2027,6 @@ if __vuepyter_camera_obj__ is not None:
             }
             const nodeUid = rawNode.node_uid == null ? '' : String(rawNode.node_uid)
             const nodeId = rawNode.node_id == null ? '' : String(rawNode.node_id)
-            const nodeLabel = rawNode.node_label == null ? '' : String(rawNode.node_label)
             const nodeIndexNumber = Number(rawNode.node_index)
             const rawPos = Array.isArray(rawNode.pos) ? rawNode.pos : null
             const hasPos = Array.isArray(rawPos) && rawPos.length >= 2
@@ -2057,7 +2043,6 @@ if __vuepyter_camera_obj__ is not None:
               nodeUid,
               nodeId,
               nodeIndex: Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null,
-              nodeLabel,
               hasPos: Number.isFinite(localX) && Number.isFinite(localY),
               localX: Number.isFinite(localX) ? localX : null,
               localY: Number.isFinite(localY) ? localY : null,
@@ -2092,16 +2077,14 @@ if __vuepyter_camera_obj__ is not None:
           const endpointPrefix = endpointName === 'target' ? 'target' : 'source'
           const nodeUid = rawEdge[`${endpointPrefix}_node_uid`] == null ? '' : String(rawEdge[`${endpointPrefix}_node_uid`])
           const nodeId = rawEdge[`${endpointPrefix}_node_id`] == null ? '' : String(rawEdge[`${endpointPrefix}_node_id`])
-          const nodeLabel = rawEdge[`${endpointPrefix}_node_label`] == null ? '' : String(rawEdge[`${endpointPrefix}_node_label`])
           const nodeIndexNumber = Number(rawEdge[`${endpointPrefix}_node_index`])
           const nodeIndex = Number.isInteger(nodeIndexNumber) && nodeIndexNumber >= 0 ? nodeIndexNumber : null
-          if (!nodeUid && !nodeId && !nodeLabel && !Number.isInteger(nodeIndex)) {
+          if (!nodeUid && !nodeId && !Number.isInteger(nodeIndex)) {
             return null
           }
           return {
             nodeUid,
             nodeId,
-            nodeLabel,
             nodeIndex,
           }
         }
@@ -2158,7 +2141,6 @@ if __vuepyter_camera_obj__ is not None:
                 nodeUid: update.nodeUid,
                 nodeId: update.nodeId,
                 nodeIndex: update.nodeIndex,
-                nodeLabel: update.nodeLabel,
                 worldX,
                 worldY,
               })
@@ -2217,7 +2199,7 @@ import math
 
 # Animation probe contract:
 # - Emit camera/node/edge deltas only for requested graphs.
-# - Include multiple identity handles so JS can match updates across transient reshapes.
+# - Include strict node identities (uid/id/index) for JS matching.
 
 
 def __vuepyter_finite_float__(value):
@@ -2303,7 +2285,7 @@ def __vuepyter_edge_endpoints__(raw_edge):
     return None, None
 
 
-def __vuepyter_node_ref_for_endpoint__(endpoint, by_object_id, by_id, by_label):
+def __vuepyter_node_ref_for_endpoint__(endpoint, by_object_id, by_id):
     if endpoint is None:
         return None
 
@@ -2312,7 +2294,7 @@ def __vuepyter_node_ref_for_endpoint__(endpoint, by_object_id, by_id, by_label):
     except Exception:
         endpoint_object_id = None
 
-    # Endpoint identity fallback order mirrors snapshot + patch flows.
+    # Endpoint identity order mirrors strict patch/sync matching (uid -> id).
     if endpoint_object_id is not None:
         ref = by_object_id.get(endpoint_object_id)
         if isinstance(ref, dict):
@@ -2334,25 +2316,6 @@ def __vuepyter_node_ref_for_endpoint__(endpoint, by_object_id, by_id, by_label):
 
     if isinstance(endpoint_id, str) and endpoint_id:
         ref = by_id.get(endpoint_id)
-        if isinstance(ref, dict):
-            return ref
-
-    endpoint_label = None
-    if hasattr(endpoint, "label"):
-        try:
-            endpoint_label = str(getattr(endpoint, "label"))
-        except Exception:
-            endpoint_label = None
-    elif isinstance(endpoint, str):
-        endpoint_label = endpoint
-    else:
-        try:
-            endpoint_label = str(endpoint)
-        except Exception:
-            endpoint_label = None
-
-    if isinstance(endpoint_label, str) and endpoint_label:
-        ref = by_label.get(endpoint_label)
         if isinstance(ref, dict):
             return ref
 
@@ -2444,7 +2407,6 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
     __graph_nodes = __vuepyter_iter_items__(getattr(__graph_obj, "nodes", []), limit=512)
     __node_ref_by_object_id = {}
     __node_ref_by_id = {}
-    __node_ref_by_label = {}
     for __node_index, __node in enumerate(__graph_nodes):
         if __node is None:
             continue
@@ -2550,14 +2512,11 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
             "node_uid": __node_uid,
             "node_id": __node_id,
             "node_index": __node_index,
-            "node_label": __node_label,
         }
         if __node_object_id is not None:
             __node_ref_by_object_id[__node_object_id] = __node_ref
         if __node_id and __node_id not in __node_ref_by_id:
             __node_ref_by_id[__node_id] = __node_ref
-        if __node_label and __node_label not in __node_ref_by_label:
-            __node_ref_by_label[__node_label] = __node_ref
 
         __node_payload = {
             "graph_uid": str(__graph_uid) if __graph_uid is not None else "",
@@ -2565,7 +2524,6 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
             "node_uid": __node_ref["node_uid"],
             "node_id": __node_ref["node_id"],
             "node_index": __node_ref["node_index"],
-            "node_label": __node_ref["node_label"],
             "moving": bool(__node_moving),
         }
         if __node_pos is not None:
@@ -2653,24 +2611,20 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
             __edge_left,
             __node_ref_by_object_id,
             __node_ref_by_id,
-            __node_ref_by_label,
         )
         __target_ref = __vuepyter_node_ref_for_endpoint__(
             __edge_right,
             __node_ref_by_object_id,
             __node_ref_by_id,
-            __node_ref_by_label,
         )
         if isinstance(__source_ref, dict):
             __edge_payload["source_node_uid"] = __source_ref.get("node_uid", "")
             __edge_payload["source_node_id"] = __source_ref.get("node_id", "")
             __edge_payload["source_node_index"] = __source_ref.get("node_index", None)
-            __edge_payload["source_node_label"] = __source_ref.get("node_label", "")
         if isinstance(__target_ref, dict):
             __edge_payload["target_node_uid"] = __target_ref.get("node_uid", "")
             __edge_payload["target_node_id"] = __target_ref.get("node_id", "")
             __edge_payload["target_node_index"] = __target_ref.get("node_index", None)
-            __edge_payload["target_node_label"] = __target_ref.get("node_label", "")
 
         if not isinstance(__source_ref, dict) and __edge_left is not None:
             try:
@@ -2687,12 +2641,6 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
                 __source_id = __edge_left
             if __source_id:
                 __edge_payload["source_node_id"] = __source_id
-            try:
-                __source_label = str(getattr(__edge_left, "label"))
-            except Exception:
-                __source_label = str(__edge_left)
-            if __source_label:
-                __edge_payload["source_node_label"] = __source_label
         if not isinstance(__target_ref, dict) and __edge_right is not None:
             try:
                 __target_id_raw = getattr(__edge_right, "id", None)
@@ -2708,12 +2656,6 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
                 __target_id = __edge_right
             if __target_id:
                 __edge_payload["target_node_id"] = __target_id
-            try:
-                __target_label = str(getattr(__edge_right, "label"))
-            except Exception:
-                __target_label = str(__edge_right)
-            if __target_label:
-                __edge_payload["target_node_label"] = __target_label
 
         __vuepyter_output__["edges"].append(__edge_payload)
         if __edge_moving:
@@ -2875,6 +2817,111 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           return null
         }
 
+        function normalizeIdentityString(value) {
+          if (typeof value === 'string') {
+            return value
+          }
+          if (typeof value === 'number' || typeof value === 'bigint') {
+            return String(value)
+          }
+          return ''
+        }
+
+        function normalizeNodeIndex(value) {
+          if (Number.isInteger(value) && value >= 0) {
+            return value
+          }
+          if (typeof value === 'string' && value.trim() !== '') {
+            const parsed = Number(value)
+            if (Number.isInteger(parsed) && parsed >= 0) {
+              return parsed
+            }
+          }
+          return null
+        }
+
+        function normalizeNodeIdentity(identity) {
+          if (!identity || typeof identity !== 'object') {
+            return { nodeUid: '', nodeId: '', nodeIndex: null }
+          }
+          return {
+            nodeUid: normalizeIdentityString(identity.nodeUid),
+            nodeId: normalizeIdentityString(identity.nodeId),
+            nodeIndex: normalizeNodeIndex(identity.nodeIndex),
+          }
+        }
+
+        function nodeIdentityFromNode(node) {
+          return normalizeNodeIdentity({
+            nodeUid: node?.uid,
+            nodeId: node?.id,
+            nodeIndex: node?.nodeIndex,
+          })
+        }
+
+        function findNodeByIdentity(nodes, identity) {
+          if (!Array.isArray(nodes)) {
+            return null
+          }
+          const { nodeUid, nodeId, nodeIndex } = normalizeNodeIdentity(identity)
+          if (!nodeUid && !nodeId && nodeIndex === null) {
+            return null
+          }
+          // Strict node identity precedence used by drag sync + animation patching.
+          // uid -> id -> nodeIndex (nodeIndex is id-guarded when nodeId is present).
+
+          if (nodeUid) {
+            const byUid = nodes.find((candidate) => normalizeIdentityString(candidate?.uid) === nodeUid)
+            if (byUid) {
+              return byUid
+            }
+          }
+
+          if (nodeId) {
+            const byId = nodes.find((candidate) => normalizeIdentityString(candidate?.id) === nodeId)
+            if (byId) {
+              return byId
+            }
+          }
+
+          if (nodeIndex !== null) {
+            const byArrayIndex = (
+              nodeIndex < nodes.length
+              ? nodes[nodeIndex]
+              : null
+            )
+            if (byArrayIndex) {
+              const byArrayIndexId = normalizeIdentityString(byArrayIndex?.id)
+              if (!nodeId || (byArrayIndexId && byArrayIndexId === nodeId)) {
+                return byArrayIndex
+              }
+            }
+
+            const byNodeIndex = nodes.find((candidate) => (
+              normalizeNodeIndex(candidate?.nodeIndex) === nodeIndex
+              && (!nodeId || normalizeIdentityString(candidate?.id) === nodeId)
+            ))
+            if (byNodeIndex) {
+              return byNodeIndex
+            }
+          }
+
+          return null
+        }
+
+        function graphMatchesIdentity(candidate, graphUid, graphName) {
+          if (!candidate) {
+            return false
+          }
+          if (graphUid && candidate?.uid === graphUid) {
+            return true
+          }
+          if (graphName && candidate?.name === graphName) {
+            return true
+          }
+          return false
+        }
+
         function findRenderedGraph(update) {
           if (!update || typeof update !== 'object') {
             return null
@@ -2890,54 +2937,15 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           }
           return graphs.find((candidate) => (
             candidate?.render
-            && ((graphUid && candidate?.uid === graphUid) || (graphName && candidate?.name === graphName))
+            && graphMatchesIdentity(candidate, graphUid, graphName)
           )) || null
         }
 
         function findRenderedNodeInGraph(graph, identity) {
-          if (!graph?.render || !Array.isArray(graph.render.nodes) || !identity || typeof identity !== 'object') {
+          if (!graph?.render || !Array.isArray(graph.render.nodes)) {
             return null
           }
-
-          const nodeUid = typeof identity.nodeUid === 'string' ? identity.nodeUid : ''
-          const nodeId = typeof identity.nodeId === 'string' ? identity.nodeId : ''
-          const nodeIndex = identity.nodeIndex
-          const nodeLabel = typeof identity.nodeLabel === 'string' ? identity.nodeLabel : ''
-
-          // Node identity precedence is intentionally strict -> fuzzy:
-          // uid -> id -> nodeIndex (guarded by id) -> label.
-          if (nodeUid) {
-            const byUid = graph.render.nodes.find((candidate) => candidate?.uid === nodeUid)
-            if (byUid) {
-              return byUid
-            }
-          }
-
-          if (nodeId) {
-            const byId = graph.render.nodes.find((candidate) => candidate?.id === nodeId)
-            if (byId) {
-              return byId
-            }
-          }
-
-          if (Number.isInteger(nodeIndex)) {
-            const byIndex = graph.render.nodes.find((candidate) => (
-              candidate?.nodeIndex === nodeIndex
-              && (!nodeId || candidate?.id === nodeId)
-            ))
-            if (byIndex) {
-              return byIndex
-            }
-          }
-
-          if (nodeLabel) {
-            const byLabel = graph.render.nodes.find((candidate) => String(candidate?.label ?? '') === nodeLabel)
-            if (byLabel) {
-              return byLabel
-            }
-          }
-
-          return null
+          return findNodeByIdentity(graph.render.nodes, identity)
         }
 
         function findRenderedNode(update) {
@@ -2945,12 +2953,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           if (!graph) {
             return null
           }
-          const node = findRenderedNodeInGraph(graph, {
-            nodeUid: update.nodeUid,
-            nodeId: update.nodeId,
-            nodeIndex: update.nodeIndex,
-            nodeLabel: update.nodeLabel,
-          })
+          const node = findRenderedNodeInGraph(graph, normalizeNodeIdentity(update))
           if (node) {
             return { graph, node }
           }
@@ -2962,20 +2965,7 @@ json.dumps(__vuepyter_output__, allow_nan=False)
             return null
           }
           const modelNodes = Array.isArray(graph.nodes) ? graph.nodes : []
-          let modelNode = null
-          if (typeof node.uid === 'string' && node.uid) {
-            modelNode = modelNodes.find((candidate) => candidate?.uid === node.uid)
-          }
-          if (!modelNode) {
-            modelNode = modelNodes.find((candidate) => candidate?.id === node.id)
-          }
-          if (!modelNode && Number.isInteger(node.nodeIndex)
-            && node.nodeIndex >= 0
-            && node.nodeIndex < modelNodes.length
-            && modelNodes[node.nodeIndex]?.id === node.id) {
-            modelNode = modelNodes[node.nodeIndex]
-          }
-          return modelNode
+          return findNodeByIdentity(modelNodes, nodeIdentityFromNode(node))
         }
 
         function findRenderedEdge(update) {
@@ -3005,25 +2995,34 @@ json.dumps(__vuepyter_output__, allow_nan=False)
             }
           }
 
+          function edgeEndpointIdentity(edge, endpointPrefix) {
+            const isTarget = endpointPrefix === 'target'
+            return normalizeNodeIdentity({
+              nodeUid: edge?.[isTarget ? 'targetUid' : 'sourceUid'],
+              nodeId: edge?.[isTarget ? 'targetId' : 'sourceId'],
+              nodeIndex: edge?.[isTarget ? 'targetNodeIndex' : 'sourceNodeIndex'],
+            })
+          }
+
           function edgeEndpointMatches(edge, ref, endpointPrefix) {
             if (!edge || !ref || typeof ref !== 'object') {
               return false
             }
-            const uidKey = endpointPrefix === 'target' ? 'targetUid' : 'sourceUid'
-            const idKey = endpointPrefix === 'target' ? 'targetId' : 'sourceId'
-            const indexKey = endpointPrefix === 'target' ? 'targetNodeIndex' : 'sourceNodeIndex'
-            const labelKey = endpointPrefix === 'target' ? 'targetLabel' : 'sourceLabel'
-            if (typeof ref.nodeUid === 'string' && ref.nodeUid && edge[uidKey] === ref.nodeUid) {
+            const { nodeUid, nodeId, nodeIndex } = normalizeNodeIdentity(ref)
+            if (!nodeUid && !nodeId && nodeIndex === null) {
+              return false
+            }
+            const endpointIdentity = edgeEndpointIdentity(edge, endpointPrefix)
+            if (nodeUid && endpointIdentity.nodeUid === nodeUid) {
               return true
             }
-            if (typeof ref.nodeId === 'string' && ref.nodeId && edge[idKey] === ref.nodeId) {
+            if (nodeId && endpointIdentity.nodeId === nodeId) {
               return true
             }
-            if (Number.isInteger(ref.nodeIndex) && Number.isInteger(edge[indexKey]) && edge[indexKey] === ref.nodeIndex) {
+            if (nodeIndex !== null
+              && endpointIdentity.nodeIndex !== null
+              && endpointIdentity.nodeIndex === nodeIndex) {
               return true
-            }
-            if (typeof ref.nodeLabel === 'string' && ref.nodeLabel) {
-              return String(edge[labelKey] ?? '') === ref.nodeLabel
             }
             return false
           }
@@ -3112,7 +3111,6 @@ json.dumps(__vuepyter_output__, allow_nan=False)
             nodeUid: node.uid,
             nodeId: node.id,
             nodeIndex: Number.isInteger(node.nodeIndex) ? node.nodeIndex : null,
-            nodeLabel: node.label,
             pos: [node.localX, node.localY],
           }
         }
@@ -3325,7 +3323,7 @@ import ast
 
 # Node-position patch contract:
 # - Resolve graph by uid first, then by graph path/name.
-# - Resolve node by uid -> id -> index -> generated n{index} -> label.
+# - Resolve node by uid -> id -> index (strict identity only).
 # - Return only applied keys so JS can keep unsynced entries pending.
 
 
@@ -3595,11 +3593,9 @@ def __vuepyter_graph_nodes_for_patch__(graph_obj):
     __nodes = []
     __node_slots_by_object = {}
     __node_slots_by_id = {}
-    __node_slots_by_label = {}
 
-    def __node_identity_and_label(raw):
+    def __node_identity_for_patch(raw):
         __identity = None
-        __label = None
 
         if hasattr(raw, "id"):
             try:
@@ -3614,25 +3610,22 @@ def __vuepyter_graph_nodes_for_patch__(graph_obj):
                 if isinstance(__identity, str) and not __identity:
                     __identity = None
 
-        if hasattr(raw, "label"):
+        if __identity is None and hasattr(raw, "label"):
             try:
-                __label = str(getattr(raw, "label"))
+                __identity = str(getattr(raw, "label"))
             except Exception:
-                __label = None
-        elif isinstance(raw, str):
-            __label = raw
-        else:
+                __identity = None
+        elif __identity is None and isinstance(raw, str):
+            __identity = raw
+        elif __identity is None:
             try:
-                __label = str(raw)
+                __identity = str(raw)
             except Exception:
-                __label = None
+                __identity = None
 
-        if __identity is None and isinstance(__label, str) and __label:
-            __identity = __label
-        if (__label is None or __label == "") and __identity is not None:
-            __label = __identity
-
-        return __identity, __label
+        if isinstance(__identity, str) and not __identity:
+            __identity = None
+        return __identity
 
     def __ensure_node(raw, node_index=None):
         if raw is None:
@@ -3643,20 +3636,14 @@ def __vuepyter_graph_nodes_for_patch__(graph_obj):
             __object_id = id(raw)
         except Exception:
             __object_id = None
-        __identity, __label = __node_identity_and_label(raw)
+        __identity = __node_identity_for_patch(raw)
 
-        # Match confidence order mirrors snapshot emitter identity policy.
+        # Match order mirrors JS patch identity policy.
         if __object_id is not None and __object_id in __node_slots_by_object:
             return __node_slots_by_object[__object_id]
 
         if __identity is not None and __identity in __node_slots_by_id:
             __existing_slot = __node_slots_by_id[__identity]
-            if __object_id is not None:
-                __node_slots_by_object[__object_id] = __existing_slot
-            return __existing_slot
-
-        if node_index is None and isinstance(__label, str) and __label in __node_slots_by_label:
-            __existing_slot = __node_slots_by_label[__label]
             if __object_id is not None:
                 __node_slots_by_object[__object_id] = __existing_slot
             return __existing_slot
@@ -3668,8 +3655,6 @@ def __vuepyter_graph_nodes_for_patch__(graph_obj):
             __node_slots_by_object[__object_id] = __slot
         if __identity is not None and __identity not in __node_slots_by_id:
             __node_slots_by_id[__identity] = __slot
-        if isinstance(__label, str) and __label and __label not in __node_slots_by_label:
-            __node_slots_by_label[__label] = __slot
         return __slot
 
     for __raw_node_index, __raw_node in enumerate(__raw_nodes):
@@ -3756,32 +3741,6 @@ for __item in __vuepyter_node_pos_patch__.get("updates", []):
                     __candidate_id = None
                 if __candidate_id is None or str(__candidate_id) == __node_id:
                     __target = __candidate
-
-    if __target is None and __node_id.startswith("n"):
-        try:
-            __generated_index = int(__node_id[1:])
-        except Exception:
-            __generated_index = -1
-        if 0 <= __generated_index < len(__nodes):
-            __target = __nodes[__generated_index]
-
-    __node_label_raw = __item.get("node_label")
-    __node_label = ""
-    if __node_label_raw is not None:
-        try:
-            __node_label = str(__node_label_raw)
-        except Exception:
-            __node_label = ""
-
-    if __target is None and __node_label:
-        for __candidate in __nodes:
-            try:
-                __candidate_label = getattr(__candidate, "label")
-            except Exception:
-                __candidate_label = None
-            if __candidate_label is not None and str(__candidate_label) == __node_label:
-                __target = __candidate
-                break
 
     if __target is None:
         continue
@@ -3890,7 +3849,6 @@ json.dumps({"applied": __vuepyter_applied_keys__})
             node_uid: nodeUid,
             node_id: nodeId,
             node_index: update.nodeIndex,
-            node_label: update.nodeLabel,
             pos: [px, py],
             attempts: 0,
             lastAttemptAt: 0,
@@ -3932,47 +3890,16 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               continue
             }
 
-            const graph = graphs.find((candidate) => (
-              (graphUid && candidate?.uid === graphUid)
-              || (graphName && candidate?.name === graphName)
-            ))
+            const graph = graphs.find((candidate) => graphMatchesIdentity(candidate, graphUid, graphName))
             if (!graph || !Array.isArray(graph.nodes)) {
               continue
             }
 
-            const pendingNodeIndexRaw = pending.node_index
-            const pendingNodeIndex = (
-              Number.isInteger(pendingNodeIndexRaw)
-                ? pendingNodeIndexRaw
-                : (typeof pendingNodeIndexRaw === 'string'
-                  && pendingNodeIndexRaw.trim() !== ''
-                  && Number.isInteger(Number(pendingNodeIndexRaw))
-                  ? Number(pendingNodeIndexRaw)
-                  : null)
-            )
-            const pendingNodeUid = pending.node_uid == null ? '' : String(pending.node_uid)
-            const pendingNodeId = pending.node_id == null ? '' : String(pending.node_id)
-            const pendingNodeLabel = pending.node_label == null ? '' : String(pending.node_label)
-
-            let node = null
-            if (pendingNodeUid) {
-              node = graph.nodes.find((candidate) => candidate?.uid === pendingNodeUid) || null
-            }
-            if (!node && pendingNodeId) {
-              node = graph.nodes.find((candidate) => candidate?.id === pendingNodeId)
-            }
-            if (!node && Number.isInteger(pendingNodeIndex)
-              && pendingNodeIndex >= 0
-              && pendingNodeIndex < graph.nodes.length) {
-              const byIndex = graph.nodes[pendingNodeIndex]
-              const byIndexId = byIndex?.id == null ? '' : String(byIndex.id)
-              if (!pendingNodeId || (byIndexId && byIndexId === pendingNodeId)) {
-                node = byIndex
-              }
-            }
-            if (!node && pendingNodeLabel) {
-              node = graph.nodes.find((candidate) => String(candidate?.label ?? '') === pendingNodeLabel)
-            }
+            const node = findNodeByIdentity(graph.nodes, {
+              nodeUid: pending.node_uid,
+              nodeId: pending.node_id,
+              nodeIndex: normalizeNodeIndex(pending.node_index),
+            })
             if (!node) {
               continue
             }
@@ -4029,22 +3956,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
                 continue
               }
 
-              let modelNode = null
-              if (typeof node.uid === 'string' && node.uid) {
-                modelNode = modelNodes.find((candidate) => candidate?.uid === node.uid) || null
-              }
-              if (!modelNode) {
-                modelNode = modelNodes.find((candidate) => candidate?.id === node.id)
-              }
-              if (!modelNode && Number.isInteger(node.nodeIndex)
-                && node.nodeIndex >= 0
-                && node.nodeIndex < modelNodes.length
-                && modelNodes[node.nodeIndex]?.id === node.id) {
-                modelNode = modelNodes[node.nodeIndex]
-              }
-              if (!modelNode && typeof node.label === 'string' && node.label) {
-                modelNode = modelNodes.find((candidate) => String(candidate?.label ?? '') === node.label)
-              }
+              const modelNode = findNodeByIdentity(modelNodes, nodeIdentityFromNode(node))
               if (!modelNode) {
                 continue
               }
@@ -4060,7 +3972,6 @@ json.dumps({"applied": __vuepyter_applied_keys__})
                 nodeUid: node.uid,
                 nodeId: node.id,
                 nodeIndex: node.nodeIndex,
-                nodeLabel: node.label,
                 pos,
               }, 0)
               queuedCount += 1
@@ -4604,7 +4515,6 @@ json.dumps({"applied": __vuepyter_applied_keys__})
                 nodeUid: hit.node.uid,
                 nodeId: hit.node.id,
                 nodeIndex: Number.isInteger(hit.node.nodeIndex) ? hit.node.nodeIndex : null,
-                nodeLabel: hit.node.label,
                 grabDX: world.x - hit.node.x,
                 grabDY: world.y - hit.node.y,
                 worldX: hit.node.x,
