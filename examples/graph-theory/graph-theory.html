@@ -251,6 +251,22 @@
       }),
     })
 
+    const EDGE_PATH_STYLE_DEFAULT = 'straight'
+    const EDGE_PATH_STYLE_ALIASES = Object.freeze({
+      line: 'straight',
+      linear: 'straight',
+      curve: 'bezier',
+      curved: 'bezier',
+      spline: 'bezier',
+      quad: 'bezier',
+      quadratic: 'bezier',
+      cubic: 'bezier',
+      elbow: 'orthogonal',
+      ortho: 'orthogonal',
+      manhattan: 'orthogonal',
+      path: 'polyline',
+    })
+
     const GRAPH_SNAPSHOT_SOURCE = `
 import json
 import math
@@ -259,6 +275,7 @@ import math
 # - Discover graph/camera/canvas objects from globals.
 # - Normalize to JSON-safe payload consumed by normalizeGraphPayload().
 # - Preserve stable identity fields so drag and animation patches can round-trip.
+# - Carry edge path style/spec metadata so JS can render non-linear paths.
 
 
 def __vuepyter_finite_float__(value, default=None):
@@ -452,6 +469,66 @@ def __vuepyter_parse_color__(raw_color):
     return color
 
 
+def __vuepyter_parse_path_style__(raw_style):
+    if raw_style is None:
+        return None
+    try:
+        path_style = str(raw_style).strip().lower()
+    except Exception:
+        return None
+    if not path_style:
+        return None
+    return path_style
+
+
+def __vuepyter_json_safe__(value, depth=4, item_limit=48):
+    if depth < 0:
+        return None
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        numeric = __vuepyter_finite_float__(value, default=None)
+        return numeric
+
+    if isinstance(value, (list, tuple)):
+        items = []
+        for index, item in enumerate(value):
+            if index >= item_limit:
+                break
+            items.append(__vuepyter_json_safe__(item, depth=depth - 1, item_limit=item_limit))
+        return items
+
+    if isinstance(value, dict):
+        output = {}
+        for index, (raw_key, raw_item) in enumerate(value.items()):
+            if index >= item_limit:
+                break
+            try:
+                key = str(raw_key)
+            except Exception:
+                continue
+            if not key:
+                continue
+            output[key] = __vuepyter_json_safe__(raw_item, depth=depth - 1, item_limit=item_limit)
+        return output
+
+    return None
+
+
+def __vuepyter_parse_path_spec__(raw_spec):
+    parsed = __vuepyter_json_safe__(raw_spec, depth=4, item_limit=48)
+    if isinstance(parsed, (dict, list)):
+        return parsed
+    return None
+
+
 def __vuepyter_parse_node_metadata__(raw):
     metadata = getattr(raw, "metadata", None)
     fill_color = __vuepyter_parse_color__(getattr(metadata, "fill_color", None))
@@ -479,13 +556,43 @@ def __vuepyter_parse_edge_metadata__(raw):
     color = __vuepyter_parse_color__(getattr(metadata, "color", None))
     width = getattr(metadata, "width", None)
     display_label = __vuepyter_parse_display_label__(getattr(metadata, "display_label", None))
+    path_style = None
+    path_spec = None
+
+    if metadata is not None:
+        path_style = __vuepyter_parse_path_style__(getattr(metadata, "path_style", None))
+        if path_style is None:
+            path_style = __vuepyter_parse_path_style__(getattr(metadata, "pathStyle", None))
+        path_spec = __vuepyter_parse_path_spec__(getattr(metadata, "path_spec", None))
+        if path_spec is None:
+            path_spec = __vuepyter_parse_path_spec__(getattr(metadata, "pathSpec", None))
+
+    if path_style is None:
+        path_style = __vuepyter_parse_path_style__(getattr(raw, "path_style", None))
+    if path_style is None:
+        path_style = __vuepyter_parse_path_style__(getattr(raw, "pathStyle", None))
+    if path_spec is None:
+        path_spec = __vuepyter_parse_path_spec__(getattr(raw, "path_spec", None))
+    if path_spec is None:
+        path_spec = __vuepyter_parse_path_spec__(getattr(raw, "pathSpec", None))
+
+    resolve_path_spec = getattr(raw, "resolve_path_spec", None)
+    if callable(resolve_path_spec):
+        try:
+            resolved_path_spec = __vuepyter_parse_path_spec__(resolve_path_spec())
+        except Exception:
+            resolved_path_spec = None
+        if resolved_path_spec is not None:
+            path_spec = resolved_path_spec
+            if path_style is None and isinstance(resolved_path_spec, dict):
+                path_style = __vuepyter_parse_path_style__(resolved_path_spec.get("style"))
 
     if width is not None:
         width = __vuepyter_finite_float__(width, default=None)
         if width is not None and width < 0:
             width = None
 
-    return color, width, display_label
+    return color, width, display_label, path_style, path_spec
 
 
 def __vuepyter_parse_pos__(raw_pos):
@@ -816,13 +923,17 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
         except Exception:
             pass
 
-        edge_color, edge_width, edge_display_label = __vuepyter_parse_edge_metadata__(raw_edge)
+        edge_color, edge_width, edge_display_label, edge_path_style, edge_path_spec = __vuepyter_parse_edge_metadata__(raw_edge)
         if edge_color is not None:
             edge_payload["color"] = edge_color
         if edge_width is not None:
             edge_payload["width"] = edge_width
         if edge_display_label is not None:
             edge_payload["display_label"] = edge_display_label
+        if edge_path_style is not None:
+            edge_payload["path_style"] = edge_path_style
+        if edge_path_spec is not None:
+            edge_payload["path_spec"] = edge_path_spec
 
         edge_label = getattr(raw_edge, "label", None)
         if edge_label is not None:
@@ -1251,6 +1362,12 @@ json.dumps(payload, allow_nan=False)
               const displayLabel = typeof rawEdge.display_label === 'boolean' ? rawEdge.display_label : false
               const label = rawEdge.label == null ? '' : String(rawEdge.label)
               const uid = rawEdge.uid == null ? '' : String(rawEdge.uid)
+              const pathStyleRaw = Object.prototype.hasOwnProperty.call(rawEdge, 'path_style')
+                ? rawEdge.path_style
+                : rawEdge.pathStyle
+              const pathSpecRaw = Object.prototype.hasOwnProperty.call(rawEdge, 'path_spec')
+                ? rawEdge.path_spec
+                : rawEdge.pathSpec
               edges.push({
                 source,
                 target,
@@ -1262,6 +1379,8 @@ json.dumps(payload, allow_nan=False)
                 width: Number.isFinite(widthNumber) && widthNumber >= 0 ? widthNumber : null,
                 displayLabel,
                 label,
+                pathStyle: normalizeEdgePathStyle(pathStyleRaw, EDGE_PATH_STYLE_DEFAULT),
+                pathSpec: normalizeEdgePathSpec(pathSpecRaw),
               })
             }
 
@@ -1395,6 +1514,384 @@ json.dumps(payload, allow_nan=False)
             edgeSizing.labelOffsetMax,
           )
         }
+
+        function normalizeEdgePathStyle(rawStyle, fallback = EDGE_PATH_STYLE_DEFAULT) {
+          if (typeof rawStyle !== 'string') {
+            return fallback
+          }
+          const trimmed = rawStyle.trim().toLowerCase()
+          if (!trimmed) {
+            return fallback
+          }
+          return EDGE_PATH_STYLE_ALIASES[trimmed] || trimmed
+        }
+
+        function normalizeEdgePathSpec(rawSpec, depth = 0) {
+          // Path specs are data-only payloads (JSON-like) used by the path registry/custom modes.
+          if (rawSpec == null || depth > 6) {
+            return null
+          }
+          if (typeof rawSpec === 'number') {
+            return Number.isFinite(rawSpec) ? rawSpec : null
+          }
+          if (typeof rawSpec === 'boolean') {
+            return rawSpec
+          }
+          if (typeof rawSpec === 'string') {
+            const trimmed = rawSpec.trim()
+            return trimmed ? trimmed : null
+          }
+          if (Array.isArray(rawSpec)) {
+            return rawSpec
+              .slice(0, 48)
+              .map((item) => normalizeEdgePathSpec(item, depth + 1))
+          }
+          if (typeof rawSpec === 'object') {
+            const output = {}
+            let count = 0
+            for (const [key, value] of Object.entries(rawSpec)) {
+              if (count >= 48) {
+                break
+              }
+              const normalizedValue = normalizeEdgePathSpec(value, depth + 1)
+              output[String(key)] = normalizedValue
+              count += 1
+            }
+            return output
+          }
+          return null
+        }
+
+        function edgePathSpecSignature(spec) {
+          try {
+            return JSON.stringify(spec ?? null)
+          } catch {
+            return ''
+          }
+        }
+
+        function edgePathSpecEquals(left, right) {
+          return edgePathSpecSignature(left) === edgePathSpecSignature(right)
+        }
+
+        const edgePathFunctionRegistry = new Map()
+
+        function normalizePathPoint(rawPoint, fallbackX, fallbackY) {
+          if (Array.isArray(rawPoint) && rawPoint.length >= 2) {
+            const x = finiteNumber(rawPoint[0])
+            const y = finiteNumber(rawPoint[1])
+            if (x !== null && y !== null) {
+              return { x, y }
+            }
+          }
+          if (rawPoint && typeof rawPoint === 'object') {
+            const x = finiteNumber(rawPoint.x)
+            const y = finiteNumber(rawPoint.y)
+            if (x !== null && y !== null) {
+              return { x, y }
+            }
+          }
+          return { x: fallbackX, y: fallbackY }
+        }
+
+        function normalizeDirection(dx, dy) {
+          const distance = Math.hypot(dx, dy)
+          if (distance < 0.0001) {
+            return { x: 1, y: 0 }
+          }
+          return { x: dx / distance, y: dy / distance }
+        }
+
+        function samplePolyline(points, tRaw = 0.5) {
+          if (!Array.isArray(points) || points.length < 2) {
+            return {
+              point: { x: 0, y: 0 },
+              tangent: { x: 1, y: 0 },
+            }
+          }
+
+          const t = clamp(Number(tRaw) || 0, 0, 1)
+          const lengths = []
+          let totalLength = 0
+
+          for (let index = 1; index < points.length; index += 1) {
+            const prev = points[index - 1]
+            const next = points[index]
+            const segmentLength = Math.hypot(next.x - prev.x, next.y - prev.y)
+            lengths.push(segmentLength)
+            totalLength += segmentLength
+          }
+
+          if (totalLength < 0.0001) {
+            const first = points[0]
+            return {
+              point: { x: first.x, y: first.y },
+              tangent: { x: 1, y: 0 },
+            }
+          }
+
+          const targetLength = totalLength * t
+          let traversed = 0
+          for (let index = 1; index < points.length; index += 1) {
+            const segmentLength = lengths[index - 1]
+            if (segmentLength < 0.0001) {
+              continue
+            }
+            if (traversed + segmentLength >= targetLength) {
+              const localT = (targetLength - traversed) / segmentLength
+              const start = points[index - 1]
+              const end = points[index]
+              const point = {
+                x: start.x + (end.x - start.x) * localT,
+                y: start.y + (end.y - start.y) * localT,
+              }
+              const tangent = normalizeDirection(end.x - start.x, end.y - start.y)
+              return { point, tangent }
+            }
+            traversed += segmentLength
+          }
+
+          const penultimate = points[points.length - 2]
+          const last = points[points.length - 1]
+          return {
+            point: { x: last.x, y: last.y },
+            tangent: normalizeDirection(last.x - penultimate.x, last.y - penultimate.y),
+          }
+        }
+
+        function quadraticPoint(start, control, end, t) {
+          const oneMinusT = 1 - t
+          return {
+            x: oneMinusT * oneMinusT * start.x + 2 * oneMinusT * t * control.x + t * t * end.x,
+            y: oneMinusT * oneMinusT * start.y + 2 * oneMinusT * t * control.y + t * t * end.y,
+          }
+        }
+
+        function quadraticTangent(start, control, end, t) {
+          return normalizeDirection(
+            2 * (1 - t) * (control.x - start.x) + 2 * t * (end.x - control.x),
+            2 * (1 - t) * (control.y - start.y) + 2 * t * (end.y - control.y),
+          )
+        }
+
+        function prunePolylinePoints(points) {
+          if (!Array.isArray(points) || points.length === 0) {
+            return []
+          }
+          const pruned = [points[0]]
+          for (let index = 1; index < points.length; index += 1) {
+            const previous = pruned[pruned.length - 1]
+            const current = points[index]
+            if (Math.hypot(current.x - previous.x, current.y - previous.y) < 0.0001) {
+              continue
+            }
+            pruned.push(current)
+          }
+          return pruned
+        }
+
+        function buildStraightEdgePath({ edge }) {
+          const start = { x: edge.source.x, y: edge.source.y }
+          const end = { x: edge.target.x, y: edge.target.y }
+          const tangent = normalizeDirection(end.x - start.x, end.y - start.y)
+          return {
+            type: 'line',
+            start,
+            end,
+            labelPoint: {
+              x: (start.x + end.x) * 0.5,
+              y: (start.y + end.y) * 0.5,
+            },
+            labelTangent: tangent,
+            endTangent: tangent,
+          }
+        }
+
+        function buildBezierEdgePath({ edge, params }) {
+          const start = { x: edge.source.x, y: edge.source.y }
+          const end = { x: edge.target.x, y: edge.target.y }
+          const dx = end.x - start.x
+          const dy = end.y - start.y
+          const distance = Math.hypot(dx, dy)
+          const direction = normalizeDirection(dx, dy)
+          const normal = { x: -direction.y, y: direction.x }
+
+          const hasCurvature = params && Object.prototype.hasOwnProperty.call(params, 'curvature')
+          const curvatureRaw = hasCurvature ? params.curvature : 0.22
+          const curvature = clamp(Number(curvatureRaw) || 0, -2.5, 2.5)
+          const lift = finiteNumber(params?.lift) ?? 0
+
+          const midpoint = {
+            x: (start.x + end.x) * 0.5,
+            y: (start.y + end.y) * 0.5,
+          }
+          const controlDefault = {
+            x: midpoint.x + normal.x * (distance * curvature + lift),
+            y: midpoint.y + normal.y * (distance * curvature + lift),
+          }
+          const control = normalizePathPoint(params?.control, controlDefault.x, controlDefault.y)
+          const labelPoint = quadraticPoint(start, control, end, 0.5)
+
+          return {
+            type: 'quadratic',
+            start,
+            control,
+            end,
+            labelPoint,
+            labelTangent: quadraticTangent(start, control, end, 0.5),
+            endTangent: quadraticTangent(start, control, end, 1.0),
+          }
+        }
+
+        function buildOrthogonalEdgePath({ edge, params }) {
+          const start = { x: edge.source.x, y: edge.source.y }
+          const end = { x: edge.target.x, y: edge.target.y }
+          const orientation = typeof params?.orientation === 'string'
+            ? params.orientation.trim().toLowerCase()
+            : 'auto'
+          const bend = finiteNumber(params?.bend) ?? 0
+          const autoHorizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y)
+          const horizontal = orientation === 'horizontal' || (orientation !== 'vertical' && autoHorizontal)
+
+          const points = horizontal
+            ? [
+              start,
+              { x: (start.x + end.x) * 0.5 + bend, y: start.y },
+              { x: (start.x + end.x) * 0.5 + bend, y: end.y },
+              end,
+            ]
+            : [
+              start,
+              { x: start.x, y: (start.y + end.y) * 0.5 + bend },
+              { x: end.x, y: (start.y + end.y) * 0.5 + bend },
+              end,
+            ]
+
+          const prunedPoints = prunePolylinePoints(points)
+          const labelSample = samplePolyline(prunedPoints, 0.5)
+          const endSample = samplePolyline(prunedPoints, 1)
+          return {
+            type: 'polyline',
+            points: prunedPoints,
+            labelPoint: labelSample.point,
+            labelTangent: labelSample.tangent,
+            endTangent: endSample.tangent,
+          }
+        }
+
+        function buildPolylineEdgePath({ edge, params }) {
+          const source = { x: edge.source.x, y: edge.source.y }
+          const target = { x: edge.target.x, y: edge.target.y }
+          const rawPoints = Array.isArray(params?.points) ? params.points : []
+          const intermediate = rawPoints
+            .slice(0, 46)
+            .map((point) => normalizePathPoint(point, source.x, source.y))
+          const points = prunePolylinePoints([source, ...intermediate, target])
+          if (points.length < 2) {
+            return buildStraightEdgePath({ edge })
+          }
+          const labelSample = samplePolyline(points, 0.5)
+          const endSample = samplePolyline(points, 1)
+          return {
+            type: 'polyline',
+            points,
+            labelPoint: labelSample.point,
+            labelTangent: labelSample.tangent,
+            endTangent: endSample.tangent,
+          }
+        }
+
+        function buildArcEdgePath({ edge, params }) {
+          const arcParams = {
+            ...params,
+          }
+          if (!Object.prototype.hasOwnProperty.call(arcParams, 'curvature')) {
+            arcParams.curvature = 0.35
+          }
+          return buildBezierEdgePath({ edge, params: arcParams })
+        }
+
+        function registerEdgePathFunction(style, resolver) {
+          const styleName = normalizeEdgePathStyle(style, '')
+          if (!styleName) {
+            throw new Error('edge path style name must be a non-empty string')
+          }
+          if (typeof resolver !== 'function') {
+            throw new Error(`edge path resolver for '${styleName}' must be a function`)
+          }
+          edgePathFunctionRegistry.set(styleName, resolver)
+        }
+
+        function resolveEdgePathInput(edge) {
+          const normalizedSpec = normalizeEdgePathSpec(edge?.pathSpec)
+          let style = normalizeEdgePathStyle(edge?.pathStyle, EDGE_PATH_STYLE_DEFAULT)
+          let params = {}
+          if (normalizedSpec && typeof normalizedSpec === 'object' && !Array.isArray(normalizedSpec)) {
+            if (Object.prototype.hasOwnProperty.call(normalizedSpec, 'style')) {
+              style = normalizeEdgePathStyle(normalizedSpec.style, style)
+            }
+            const maybeParams = normalizedSpec.params
+            if (maybeParams && typeof maybeParams === 'object' && !Array.isArray(maybeParams)) {
+              params = maybeParams
+            }
+          }
+          return { style, params, spec: normalizedSpec }
+        }
+
+        function resolveEdgePathFunction(style) {
+          const styleName = normalizeEdgePathStyle(style, EDGE_PATH_STYLE_DEFAULT)
+          return (
+            edgePathFunctionRegistry.get(styleName)
+            || edgePathFunctionRegistry.get(EDGE_PATH_STYLE_DEFAULT)
+            || buildStraightEdgePath
+          )
+        }
+
+        function buildEdgePathGeometry(edge) {
+          const input = resolveEdgePathInput(edge)
+          const resolver = resolveEdgePathFunction(input.style)
+          try {
+            return resolver({
+              edge,
+              style: input.style,
+              params: input.params,
+              spec: input.spec,
+            })
+          } catch {
+            return buildStraightEdgePath({ edge, style: EDGE_PATH_STYLE_DEFAULT, params: {}, spec: null })
+          }
+        }
+
+        function traceEdgePath(ctx, pathGeometry) {
+          const geometry = pathGeometry && typeof pathGeometry === 'object' ? pathGeometry : null
+          if (!geometry) {
+            return
+          }
+          if (geometry.type === 'quadratic' && geometry.start && geometry.control && geometry.end) {
+            ctx.moveTo(geometry.start.x, geometry.start.y)
+            ctx.quadraticCurveTo(geometry.control.x, geometry.control.y, geometry.end.x, geometry.end.y)
+            return
+          }
+          if (geometry.type === 'polyline' && Array.isArray(geometry.points) && geometry.points.length >= 2) {
+            ctx.moveTo(geometry.points[0].x, geometry.points[0].y)
+            for (let index = 1; index < geometry.points.length; index += 1) {
+              ctx.lineTo(geometry.points[index].x, geometry.points[index].y)
+            }
+            return
+          }
+          const start = geometry.start
+          const end = geometry.end
+          if (start && end) {
+            ctx.moveTo(start.x, start.y)
+            ctx.lineTo(end.x, end.y)
+          }
+        }
+
+        registerEdgePathFunction('straight', buildStraightEdgePath)
+        registerEdgePathFunction('bezier', buildBezierEdgePath)
+        registerEdgePathFunction('orthogonal', buildOrthogonalEdgePath)
+        registerEdgePathFunction('polyline', buildPolylineEdgePath)
+        registerEdgePathFunction('arc', buildArcEdgePath)
 
         function nodeLabelFontSize(node, nodeRadiusValue = null) {
           const nodeSizing = VISUALIZER_CONSTANTS.render.node
@@ -1664,6 +2161,8 @@ json.dumps(payload, allow_nan=False)
                   return null
                 }
                 const width = edgeStrokeWidth(edge)
+                const pathStyle = normalizeEdgePathStyle(edge.pathStyle, EDGE_PATH_STYLE_DEFAULT)
+                const pathSpec = normalizeEdgePathSpec(edge.pathSpec)
                 return {
                   uid: typeof edge.uid === 'string' ? edge.uid : '',
                   edgeIndex: Number.isInteger(edge.edgeIndex) && edge.edgeIndex >= 0 ? edge.edgeIndex : null,
@@ -1682,6 +2181,8 @@ json.dumps(payload, allow_nan=False)
                   labelSize: edgeLabelFontSize(width),
                   displayLabel: !!edge.displayLabel && !!edge.label,
                   label: edge.label || '',
+                  pathStyle,
+                  pathSpec,
                 }
               })
               .filter((edge) => edge !== null)
@@ -2070,6 +2571,26 @@ if __vuepyter_camera_obj__ is not None:
               style.width = width
             }
           }
+          const hasPathStyle = (
+            Object.prototype.hasOwnProperty.call(rawEdge, 'path_style')
+            || Object.prototype.hasOwnProperty.call(rawEdge, 'pathStyle')
+          )
+          if (hasPathStyle) {
+            const rawPathStyle = Object.prototype.hasOwnProperty.call(rawEdge, 'path_style')
+              ? rawEdge.path_style
+              : rawEdge.pathStyle
+            style.pathStyle = normalizeEdgePathStyle(rawPathStyle, null)
+          }
+          const hasPathSpec = (
+            Object.prototype.hasOwnProperty.call(rawEdge, 'path_spec')
+            || Object.prototype.hasOwnProperty.call(rawEdge, 'pathSpec')
+          )
+          if (hasPathSpec) {
+            const rawPathSpec = Object.prototype.hasOwnProperty.call(rawEdge, 'path_spec')
+              ? rawEdge.path_spec
+              : rawEdge.pathSpec
+            style.pathSpec = normalizeEdgePathSpec(rawPathSpec)
+          }
           return Object.keys(style).length > 0 ? style : null
         }
 
@@ -2200,6 +2721,7 @@ import math
 # Animation probe contract:
 # - Emit camera/node/edge deltas only for requested graphs.
 # - Include strict node identities (uid/id/index) for JS matching.
+# - Include edge path style/spec deltas so curved routing animates incrementally.
 
 
 def __vuepyter_finite_float__(value):
@@ -2248,6 +2770,59 @@ def __vuepyter_parse_color__(value):
     except Exception:
         return None
     return text if text else None
+
+
+def __vuepyter_parse_path_style__(value):
+    if value is None:
+        return None
+    try:
+        text = str(value).strip().lower()
+    except Exception:
+        return None
+    return text if text else None
+
+
+def __vuepyter_json_safe__(value, depth=4, item_limit=48):
+    if depth < 0:
+        return None
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return __vuepyter_finite_float__(value)
+    if isinstance(value, (list, tuple)):
+        out = []
+        for index, item in enumerate(value):
+            if index >= item_limit:
+                break
+            out.append(__vuepyter_json_safe__(item, depth=depth - 1, item_limit=item_limit))
+        return out
+    if isinstance(value, dict):
+        out = {}
+        for index, (raw_key, raw_item) in enumerate(value.items()):
+            if index >= item_limit:
+                break
+            try:
+                key = str(raw_key)
+            except Exception:
+                continue
+            if not key:
+                continue
+            out[key] = __vuepyter_json_safe__(raw_item, depth=depth - 1, item_limit=item_limit)
+        return out
+    return None
+
+
+def __vuepyter_parse_path_spec__(value):
+    parsed = __vuepyter_json_safe__(value, depth=4, item_limit=48)
+    if isinstance(parsed, (dict, list)):
+        return parsed
+    return None
 
 
 def __vuepyter_nonnegative_float__(value):
@@ -2570,6 +3145,8 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
         __edge_metadata = getattr(__edge, "metadata", None)
         __edge_color = None
         __edge_width = None
+        __edge_path_style = None
+        __edge_path_spec = None
         if isinstance(__edge_state, dict) and "color" in __edge_state:
             __edge_color = __vuepyter_parse_color__(__edge_state.get("color"))
         if __edge_color is None and __edge_metadata is not None:
@@ -2580,7 +3157,47 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
         if __edge_width is None and __edge_metadata is not None:
             __edge_width = __vuepyter_nonnegative_float__(getattr(__edge_metadata, "width", None))
 
-        if __edge_color is None and __edge_width is None and not __edge_moving:
+        if isinstance(__edge_state, dict) and "path_style" in __edge_state:
+            __edge_path_style = __vuepyter_parse_path_style__(__edge_state.get("path_style"))
+        if __edge_path_style is None and isinstance(__edge_state, dict) and "pathStyle" in __edge_state:
+            __edge_path_style = __vuepyter_parse_path_style__(__edge_state.get("pathStyle"))
+        if __edge_path_style is None and isinstance(__edge_state, dict):
+            __edge_path = __edge_state.get("path")
+            if isinstance(__edge_path, dict):
+                __edge_path_style = __vuepyter_parse_path_style__(__edge_path.get("style"))
+        if __edge_path_style is None and __edge_metadata is not None:
+            __edge_path_style = __vuepyter_parse_path_style__(getattr(__edge_metadata, "path_style", None))
+        if __edge_path_style is None and __edge_metadata is not None:
+            __edge_path_style = __vuepyter_parse_path_style__(getattr(__edge_metadata, "pathStyle", None))
+        if __edge_path_style is None:
+            __edge_path_style = __vuepyter_parse_path_style__(getattr(__edge, "path_style", None))
+        if __edge_path_style is None:
+            __edge_path_style = __vuepyter_parse_path_style__(getattr(__edge, "pathStyle", None))
+
+        if isinstance(__edge_state, dict) and "path_spec" in __edge_state:
+            __edge_path_spec = __vuepyter_parse_path_spec__(__edge_state.get("path_spec"))
+        if __edge_path_spec is None and isinstance(__edge_state, dict) and "pathSpec" in __edge_state:
+            __edge_path_spec = __vuepyter_parse_path_spec__(__edge_state.get("pathSpec"))
+        if __edge_path_spec is None and isinstance(__edge_state, dict):
+            __edge_path = __edge_state.get("path")
+            if __edge_path is not None:
+                __edge_path_spec = __vuepyter_parse_path_spec__(__edge_path)
+        if __edge_path_spec is None and __edge_metadata is not None:
+            __edge_path_spec = __vuepyter_parse_path_spec__(getattr(__edge_metadata, "path_spec", None))
+        if __edge_path_spec is None and __edge_metadata is not None:
+            __edge_path_spec = __vuepyter_parse_path_spec__(getattr(__edge_metadata, "pathSpec", None))
+        if __edge_path_spec is None:
+            __edge_path_spec = __vuepyter_parse_path_spec__(getattr(__edge, "path_spec", None))
+        if __edge_path_spec is None:
+            __edge_path_spec = __vuepyter_parse_path_spec__(getattr(__edge, "pathSpec", None))
+
+        if (
+            __edge_color is None
+            and __edge_width is None
+            and __edge_path_style is None
+            and __edge_path_spec is None
+            and not __edge_moving
+        ):
             continue
 
         try:
@@ -2605,6 +3222,10 @@ for __graph_ref in __vuepyter_iter_items__(__vuepyter_anim_query__.get("graphs",
             __edge_payload["color"] = __edge_color
         if __edge_width is not None:
             __edge_payload["width"] = __edge_width
+        if __edge_path_style is not None:
+            __edge_payload["path_style"] = __edge_path_style
+        if __edge_path_spec is not None:
+            __edge_payload["path_spec"] = __edge_path_spec
 
         __edge_left, __edge_right = __vuepyter_edge_endpoints__(__edge)
         __source_ref = __vuepyter_node_ref_for_endpoint__(
@@ -3223,6 +3844,26 @@ json.dumps(__vuepyter_output__, allow_nan=False)
             }
             if (modelEdge) {
               modelEdge.width = style.width
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(style, 'pathStyle')) {
+            const nextPathStyle = normalizeEdgePathStyle(style.pathStyle, EDGE_PATH_STYLE_DEFAULT)
+            if (edge.pathStyle !== nextPathStyle) {
+              edge.pathStyle = nextPathStyle
+              applied = true
+            }
+            if (modelEdge) {
+              modelEdge.pathStyle = nextPathStyle
+            }
+          }
+          if (Object.prototype.hasOwnProperty.call(style, 'pathSpec')) {
+            const nextPathSpec = normalizeEdgePathSpec(style.pathSpec)
+            if (!edgePathSpecEquals(edge.pathSpec, nextPathSpec)) {
+              edge.pathSpec = nextPathSpec
+              applied = true
+            }
+            if (modelEdge) {
+              modelEdge.pathSpec = nextPathSpec
             }
           }
 
@@ -4004,16 +4645,27 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           }
         }
 
-        function drawArrowhead(ctx, source, target, size) {
-          const dx = target.x - source.x
-          const dy = target.y - source.y
-          const dist = Math.hypot(dx, dy)
-          if (dist < 1) {
+        function drawArrowhead(ctx, edge, pathGeometry, size) {
+          if (!edge || !edge.target) {
             return
           }
 
-          const ux = dx / dist
-          const uy = dy / dist
+          const fallbackDirection = normalizeDirection(
+            edge.target.x - edge.source.x,
+            edge.target.y - edge.source.y,
+          )
+          const endTangent = pathGeometry?.endTangent
+          const tangent = (
+            endTangent
+            && Number.isFinite(endTangent.x)
+            && Number.isFinite(endTangent.y)
+          )
+            ? normalizeDirection(endTangent.x, endTangent.y)
+            : fallbackDirection
+
+          const ux = tangent.x
+          const uy = tangent.y
+          const target = edge.target
           const tipInset = target.radius + Math.max(2, target.strokeWidth * 0.5)
           const tipX = target.x - ux * tipInset
           const tipY = target.y - uy * tipInset
@@ -4227,33 +4879,50 @@ json.dumps({"applied": __vuepyter_applied_keys__})
               continue
             }
 
+            const renderedEdges = []
             for (const edge of graph.render.edges) {
+              const pathGeometry = buildEdgePathGeometry(edge)
+              renderedEdges.push({ edge, pathGeometry })
               ctx.strokeStyle = edge.color
               ctx.lineWidth = edge.width
               ctx.beginPath()
-              ctx.moveTo(edge.source.x, edge.source.y)
-              ctx.lineTo(edge.target.x, edge.target.y)
+              traceEdgePath(ctx, pathGeometry)
               ctx.stroke()
             }
 
             if (graph.render.directed) {
-              for (const edge of graph.render.edges) {
+              for (const { edge, pathGeometry } of renderedEdges) {
                 ctx.fillStyle = edge.color
-                drawArrowhead(ctx, edge.source, edge.target, edge.arrowSize)
+                drawArrowhead(ctx, edge, pathGeometry, edge.arrowSize)
               }
             }
 
-            for (const edge of graph.render.edges) {
+            for (const { edge, pathGeometry } of renderedEdges) {
               if (!edge.displayLabel) {
                 continue
               }
-              const dx = edge.target.x - edge.source.x
-              const dy = edge.target.y - edge.source.y
-              const dist = Math.hypot(dx, dy) || 1
-              const nx = -dy / dist
-              const ny = dx / dist
-              const midX = (edge.source.x + edge.target.x) / 2 + nx * edge.labelOffset
-              const midY = (edge.source.y + edge.target.y) / 2 + ny * edge.labelOffset
+              const labelPoint = pathGeometry?.labelPoint
+              const labelTangent = pathGeometry?.labelTangent
+              const tangent = (
+                labelTangent
+                && Number.isFinite(labelTangent.x)
+                && Number.isFinite(labelTangent.y)
+              )
+                ? normalizeDirection(labelTangent.x, labelTangent.y)
+                : normalizeDirection(edge.target.x - edge.source.x, edge.target.y - edge.source.y)
+              const labelBase = (
+                labelPoint
+                && Number.isFinite(labelPoint.x)
+                && Number.isFinite(labelPoint.y)
+              )
+                ? labelPoint
+                : {
+                  x: (edge.source.x + edge.target.x) * 0.5,
+                  y: (edge.source.y + edge.target.y) * 0.5,
+                }
+              const normal = { x: -tangent.y, y: tangent.x }
+              const midX = labelBase.x + normal.x * edge.labelOffset
+              const midY = labelBase.y + normal.y * edge.labelOffset
 
               ctx.fillStyle = edge.color
               ctx.textAlign = 'center'
