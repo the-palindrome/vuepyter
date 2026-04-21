@@ -39,8 +39,11 @@ After the runtime resolves, Vuepyter:
 1. Loads `micropip`.
 2. Installs `pyodidePackages`.
 3. Runs `pyodideInitCode`.
-4. Syncs the workspace.
-5. Emits the `ready` event.
+4. Resolves and runs `preamble` when configured.
+5. Syncs the workspace.
+6. Emits the `ready` event.
+
+`preamble` accepts inline Python or a `.py`/`.ipynb` path or URL. This stage is intended for one-time startup setup that should exist before notebook cell execution.
 
 Cell execution is queued internally. Vuepyter never runs multiple Python cells at once in the same kernel instance, which keeps execution ordering predictable and avoids interleaved state mutations.
 

@@ -81,6 +81,27 @@ const EditorBarStub = defineComponent({
 })
 
 describe('Vuepyter', () => {
+  it('executes a preamble before the notebook becomes ready', async () => {
+    const fake = createFakePyodide()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => fake))
+
+    const wrapper = mount(Vuepyter, {
+      props: {
+        preamble: 'import numpy as np\nx = 2',
+      },
+      global: {
+        stubs: {
+          Notebook: NotebookStub,
+          EditorBar: EditorBarStub,
+        },
+      },
+    })
+
+    const ready = await waitForEvent(() => wrapper.emitted('ready'))
+    expect(ready).toBeTruthy()
+    expect(fake.runPythonAsync).toHaveBeenCalledWith('import numpy as np\nx = 2')
+  })
+
   it('initializes kernel and emits ready', async () => {
     const fake = createFakePyodide()
     const loadPyodide = vi.fn(async () => fake)

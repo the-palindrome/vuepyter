@@ -99,9 +99,14 @@ const initCode = [
     v-model="notebook"
     :pyodide-packages="packages"
     :pyodide-init-code="initCode"
+    preamble="./preamble.py"
   />
 </template>
 ```
+
+`preamble` accepts inline Python or a path/URL to a `.py` or `.ipynb` file. Vuepyter executes it during kernel startup, before the component reports `ready`, so imports and variables from the preamble are available to notebook cells immediately.
+
+Use `v-model` to load and persist notebook document content. Use `preamble` only for one-time startup code that should run before cells execute.
 
 Use `pyodideUrl` when you need a self-hosted mirror or a pinned runtime source:
 

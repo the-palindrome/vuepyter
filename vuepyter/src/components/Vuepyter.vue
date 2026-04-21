@@ -29,6 +29,7 @@ const props = withDefaults(
     pyodideUrl?: string
     pyodidePackages?: string[]
     pyodideInitCode?: string
+    preamble?: string
     kernelUpdateMode?: KernelUpdateMode
     readOnly?: boolean
     showEditorBar?: boolean
@@ -46,6 +47,7 @@ const props = withDefaults(
     pyodideUrl: DEFAULT_PYODIDE_URL,
     pyodidePackages: () => [],
     pyodideInitCode: '',
+    preamble: '',
     kernelUpdateMode: 'after-execution',
     readOnly: false,
     showEditorBar: true,
@@ -114,6 +116,7 @@ const kernel = usePyodideKernel({
   pyodideUrl: props.pyodideUrl,
   pyodidePackages: props.pyodidePackages,
   pyodideInitCode: props.pyodideInitCode,
+  preamble: props.preamble,
   getWorkspaceUpdateMode: () => kernelUpdateMode.value,
   onReady: ({ pyodide }) => {
     emit('ready', {

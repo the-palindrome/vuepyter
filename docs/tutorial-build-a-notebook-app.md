@@ -193,9 +193,9 @@ If you render Vuepyter during SSR, the editor shell may hydrate incorrectly or t
 
 ## Configure the Pyodide Kernel
 
-Vuepyter exposes three main runtime props for kernel setup: `pyodideUrl`, `pyodidePackages`, and `pyodideInitCode`. These map directly to the browser-side Pyodide bootstrap sequence in [`vuepyter/src/composables/usePyodideKernel.ts`](../vuepyter/src/composables/usePyodideKernel.ts).
+Vuepyter exposes four main runtime props for kernel setup: `pyodideUrl`, `pyodidePackages`, `pyodideInitCode`, and `preamble`. These map directly to the browser-side Pyodide bootstrap sequence in [`vuepyter/src/composables/usePyodideKernel.ts`](../vuepyter/src/composables/usePyodideKernel.ts).
 
-Use `pyodidePackages` to install extra packages before the notebook runs. Use `pyodideInitCode` to import modules or define helper functions once after initialization.
+Use `pyodidePackages` to install extra packages before the notebook runs. Use `pyodideInitCode` to import modules or define helper functions once after initialization. Use `preamble` for one-time bootstrap code that should run before notebook cells, such as constants, shared helper functions, or imports that your notebook expects to exist.
 
 ```vue
 <template>
@@ -204,9 +204,14 @@ Use `pyodidePackages` to install extra packages before the notebook runs. Use `p
     pyodide-url="https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.mjs"
     :pyodide-packages="['numpy', 'pandas']"
     pyodide-init-code="import math"
+    preamble="./preamble.py"
   />
 </template>
 ```
+
+`preamble` accepts inline Python code or a path/URL to a `.py` or `.ipynb` file. Vuepyter runs `preamble` after `pyodideInitCode` and before the component emits `ready`.
+
+Keep notebook content and kernel bootstrap setup separate. Load notebook JSON through `v-model`, and use `preamble` only for startup code that should be available to all cells.
 
 Vuepyter also exposes `kernelUpdateMode`. The default value, `after-execution`, synchronizes the workspace after a cell completes. The alternative, `always-live`, is experimental and best-effort. It instruments top-level `for` and `while` loops for more frequent workspace sync, but it does not provide full live output streaming.
 

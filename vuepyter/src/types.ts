@@ -254,6 +254,7 @@ export interface VuepyterProps {
   pyodideUrl?: string
   pyodidePackages?: string[]
   pyodideInitCode?: string
+  preamble?: string
   kernelUpdateMode?: KernelUpdateMode
   readOnly?: boolean
   showEditorBar?: boolean
@@ -339,6 +340,7 @@ export interface UsePyodideKernelOptions {
   pyodideUrl?: string
   pyodidePackages?: string[]
   pyodideInitCode?: string
+  preamble?: string
   getWorkspaceUpdateMode?: () => KernelUpdateMode
   onReady?: (payload: KernelReadyPayload) => void
   onError?: (payload: KernelErrorPayload) => void

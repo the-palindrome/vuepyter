@@ -51,12 +51,13 @@ import 'vuepyter/style.css'
 
 The quickstart example is the simplest and most reusable reference. It lives in [`examples/quickstart/quickstart.html`](../examples/quickstart/quickstart.html) and loads [`examples/quickstart/quickstart.ipynb`](../examples/quickstart/quickstart.ipynb).
 
-The page renders a two-pane layout. The left pane shows the current notebook JSON, and the right pane renders Vuepyter with `v-model` plus a short `autosaveInterval`.
+The page renders a two-pane layout. The left pane shows the current notebook JSON, and the right pane renders Vuepyter with `v-model`, a startup `preamble`, and a short `autosaveInterval`.
 
 ### What It Demonstrates
 
 - Loading a notebook from a local `.ipynb` file with `fetch()`.
 - Binding notebook JSON directly to `v-model`.
+- Running a `preamble.py` file before the kernel reports `ready`.
 - Watching Vuepyter emit serialized notebook updates by mirroring the JSON in a side panel.
 - Using a light theme override through CSS variables.
 - Working with markdown, code execution, and KaTeX math in one small notebook.
@@ -65,7 +66,7 @@ The page renders a two-pane layout. The left pane shows the current notebook JSO
 
 This example is the closest match to a package consumer's first integration. If you want to drop Vuepyter into an existing Vue app, start here before you look at the more interactive demos.
 
-The notebook content is intentionally small. It includes a markdown welcome cell, a simple Python cell that evaluates `40 + 2`, a KaTeX block, and an empty cell for further editing.
+The notebook content is intentionally small. It includes a markdown welcome cell, a short note about the preamble, a Python cell that uses `preamble_var` from `preamble.py`, a KaTeX block, and an empty cell for further editing.
 
 ## Game of Life Example
 

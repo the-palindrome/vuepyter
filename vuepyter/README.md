@@ -106,10 +106,11 @@ Common runtime props:
   v-model="notebook"
   :pyodide-packages="['numpy', 'pandas']"
   pyodide-init-code="import math"
+  preamble="./preamble.py"
 />
 ```
 
-Vuepyter uses its bundled Pyodide runtime by default. Override `pyodideUrl` only if you need a mirror or a different version. `pyodidePackages` installs extra packages before execution, and `pyodideInitCode` runs once after the runtime loads. `kernelUpdateMode` controls whether workspace state updates after a cell runs or attempts additional syncs while a long-running cell is still executing.
+Vuepyter uses its bundled Pyodide runtime by default. Override `pyodideUrl` only if you need a mirror or a different version. `pyodidePackages` installs extra packages before execution, `pyodideInitCode` runs once after the runtime loads, and `preamble` runs once before the editor becomes ready. `preamble` accepts inline Python code or a path/URL to a `.py` or `.ipynb` file, so a setup like `<Vuepyter preamble="./preamble.ipynb" />` works directly from the component tag. `kernelUpdateMode` controls whether workspace state updates after a cell runs or attempts additional syncs while a long-running cell is still executing.
 
 `kernelUpdateMode="always-live"` is experimental. It improves workspace syncing during top-level loops, but it is not a full streaming execution mode.
 

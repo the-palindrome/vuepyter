@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from 'vitest'
 import { usePyodideKernel } from '@/composables/usePyodideKernel'
 import type { PyodideInterface } from '@/types'
 
+function createFetchResponse(body: string, status = 200): Pick<Response, 'ok' | 'status' | 'text'> {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => body,
+  }
+}
+
 function createFakePyodide(runImpl?: (source: string) => Promise<unknown>): PyodideInterface {
   let stdout = (_value: string) => {}
   let stderr = (_value: string) => {}
@@ -62,6 +70,81 @@ describe('usePyodideKernel', () => {
     })
     expect(fake.loadPackage).not.toHaveBeenCalled()
     expect(fake.runPythonAsync).toHaveBeenCalledWith('import micropip')
+  })
+
+  it('runs inline preamble during initialization', async () => {
+    const fake = createFakePyodide()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => fake))
+
+    const kernel = usePyodideKernel({
+      pyodideUrl: 'https://example.com/pyodide.js',
+      preamble: 'import numpy as np\nx = 2',
+    })
+
+    await kernel.initialize()
+    expect(fake.runPythonAsync).toHaveBeenCalledWith('import numpy as np\nx = 2')
+  })
+
+  it('loads and executes a .py preamble file before the kernel becomes ready', async () => {
+    const fake = createFakePyodide()
+    const fetchMock = vi.fn(async () => createFetchResponse('import numpy as np\nx = 2'))
+    vi.stubGlobal('loadPyodide', vi.fn(async () => fake))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const kernel = usePyodideKernel({
+      pyodideUrl: 'https://example.com/pyodide.js',
+      preamble: '/fixtures/preamble.py',
+    })
+
+    await kernel.initialize()
+
+    expect(fetchMock).toHaveBeenCalledWith('/fixtures/preamble.py', {
+      cache: 'no-store',
+    })
+    expect(fake.runPythonAsync).toHaveBeenCalledWith('import numpy as np\nx = 2')
+  })
+
+  it('loads a notebook preamble and executes only code cells', async () => {
+    const fake = createFakePyodide()
+    const notebook = JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          cell_type: 'markdown',
+          source: ['# Ignore me'],
+        },
+        {
+          cell_type: 'code',
+          source: ['import numpy as np'],
+        },
+        {
+          cell_type: 'code',
+          source: ['x = 2'],
+        },
+      ],
+    })
+
+    vi.stubGlobal('loadPyodide', vi.fn(async () => fake))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => createFetchResponse(notebook)),
+    )
+
+    const kernel = usePyodideKernel({
+      pyodideUrl: 'https://example.com/pyodide.js',
+      preamble: '/fixtures/preamble.ipynb',
+    })
+
+    await kernel.initialize()
+
+    const calledSources = fake.runPythonAsync.mock.calls.map(([source]) => source)
+    const preambleSource = calledSources.find((source) => source.includes('import numpy as np'))
+    expect(preambleSource).toBeTruthy()
+    expect(preambleSource).toContain('import numpy as np')
+    expect(preambleSource).toContain('x = 2')
+    expect(preambleSource).not.toContain('# Ignore me')
   })
 
   it('queues execution requests sequentially', async () => {

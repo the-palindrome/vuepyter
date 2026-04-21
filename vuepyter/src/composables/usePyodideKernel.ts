@@ -221,6 +221,106 @@ async function installPyodidePackages(
   await pyodide.runPythonAsync(`await micropip.install(${encodedPackages})`)
 }
 
+const NOTEBOOK_FILE_EXTENSION = /\.ipynb(?:[?#].*)?$/iu
+const PYTHON_FILE_EXTENSION = /\.py(?:[?#].*)?$/iu
+const URL_LIKE_PREAMBLE = /^(https?:)?\/\//iu
+
+function normalizeMultiline(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry ?? '')).join('')
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (value == null) {
+    return ''
+  }
+  return String(value)
+}
+
+function notebookToPreambleSource(input: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    throw new Error('Notebook preamble must contain valid JSON')
+  }
+
+  const notebook =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+
+  if (!notebook || !Array.isArray(notebook.cells)) {
+    throw new Error('Notebook preamble must include a cells array')
+  }
+
+  const chunks: string[] = []
+  for (const entry of notebook.cells) {
+    const cell =
+      entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>)
+        : null
+    if (!cell || cell.cell_type !== 'code') {
+      continue
+    }
+
+    const source = normalizeMultiline(cell.source)
+    if (source.trim()) {
+      chunks.push(source)
+    }
+  }
+
+  return chunks.join('\n\n')
+}
+
+function shouldFetchPreamble(preamble: string): boolean {
+  if (!preamble || preamble.includes('\n') || preamble.includes('\r')) {
+    return false
+  }
+
+  if (
+    preamble.startsWith('./')
+    || preamble.startsWith('../')
+    || preamble.startsWith('/')
+    || URL_LIKE_PREAMBLE.test(preamble)
+  ) {
+    return true
+  }
+
+  return NOTEBOOK_FILE_EXTENSION.test(preamble) || PYTHON_FILE_EXTENSION.test(preamble)
+}
+
+async function fetchPreambleSource(preamblePath: string): Promise<string> {
+  if (typeof fetch !== 'function') {
+    throw new Error('Preamble file loading requires fetch support in this environment')
+  }
+
+  const response = await fetch(preamblePath, { cache: 'no-store' })
+  if (!response.ok) {
+    throw new Error(`Failed to load preamble from ${preamblePath}: ${response.status}`)
+  }
+
+  return response.text()
+}
+
+async function resolvePreambleSource(preamble: string): Promise<string> {
+  const trimmed = preamble.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  if (!shouldFetchPreamble(trimmed)) {
+    return preamble
+  }
+
+  const fileContents = await fetchPreambleSource(trimmed)
+  if (NOTEBOOK_FILE_EXTENSION.test(trimmed)) {
+    return notebookToPreambleSource(fileContents)
+  }
+  return fileContents
+}
+
 const MATPLOTLIB_BOOTSTRAP_SOURCE = `
 import os as __vuepyter_os__
 
@@ -655,6 +755,12 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         await installPyodidePackages(instance, options.pyodidePackages ?? [])
         if (options.pyodideInitCode?.trim()) {
           await instance.runPythonAsync(options.pyodideInitCode)
+        }
+        if (options.preamble?.trim()) {
+          const preambleSource = await resolvePreambleSource(options.preamble)
+          if (preambleSource.trim()) {
+            await instance.runPythonAsync(preambleSource)
+          }
         }
 
         pyodide.value = instance

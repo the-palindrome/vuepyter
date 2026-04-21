@@ -75,9 +75,9 @@ https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.mjs
 
 If the default CDN works but your override does not, the override is the first thing to inspect.
 
-## `pyodidePackages` or `pyodideInitCode` fails
+## `pyodidePackages`, `pyodideInitCode`, or `preamble` fails
 
-Vuepyter always loads `micropip` before it installs any extra packages. After that, it installs every entry from `pyodidePackages` and finally runs `pyodideInitCode`.
+Vuepyter always loads `micropip` before it installs any extra packages. After that, it installs every entry from `pyodidePackages`, runs `pyodideInitCode`, and then runs `preamble`.
 
 That order means package failures can block the kernel before your init code runs. A package list that works in CPython does not automatically work in Pyodide.
 
@@ -87,6 +87,8 @@ Check these cases when initialization fails:
 - The package is not available for Pyodide or `micropip`.
 - The browser cannot reach the package source because of network policy or offline mode.
 - `pyodideInitCode` imports a package that is not present yet.
+- `preamble` points to a `.py`/`.ipynb` path or URL that the browser cannot fetch.
+- A notebook-based `preamble` is invalid JSON or does not include a `cells` array.
 
 Start with the smallest possible setup and add dependencies back one at a time:
 
@@ -95,10 +97,11 @@ Start with the smallest possible setup and add dependencies back one at a time:
   v-model="notebook"
   :pyodide-packages="[]"
   pyodide-init-code=""
+  preamble=""
 />
 ```
 
-When that works, reintroduce packages individually until the failing dependency is obvious.
+When that works, reintroduce packages, init code, and preamble one piece at a time until the failing input is obvious.
 
 ## The kernel loads but execution still looks wrong
 

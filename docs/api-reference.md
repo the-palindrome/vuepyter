@@ -29,6 +29,7 @@ The default plugin registers only `Vuepyter`. Import `CodeEditor` as a named exp
 | `pyodideUrl` | `string` | bundled CDN URL | Overrides the Pyodide runtime source. Use this for self-hosted or mirrored runtimes. |
 | `pyodidePackages` | `string[]` | `[]` | Installs extra packages through `micropip` during kernel initialization. |
 | `pyodideInitCode` | `string` | `''` | Runs once after Pyodide loads and before notebook execution starts. |
+| `preamble` | `string` | `''` | Runs once during startup before the component becomes ready. Accepts inline Python code or a `.py`/`.ipynb` path or URL. |
 | `kernelUpdateMode` | `'after-execution' \| 'always-live'` | `'after-execution'` | Controls when Vuepyter syncs the Python workspace back into Vue. `always-live` is experimental. |
 | `readOnly` | `boolean` | `false` | Disables mutating cell operations and editor writes. |
 | `showEditorBar` | `boolean` | `true` | Shows or hides the notebook toolbar and menus. |
@@ -241,6 +242,7 @@ Unknown output types are normalized into `display_data` with fallback `text/plai
 - `pyodideUrl`
 - `pyodidePackages`
 - `pyodideInitCode`
+- `preamble`
 - `getWorkspaceUpdateMode`
 - `onReady`
 - `onError`
@@ -272,7 +274,7 @@ Unknown output types are normalized into `display_data` with fallback `text/plai
 
 ### Notes
 
-- Initialization always preloads `micropip`, then installs `pyodidePackages`, then runs `pyodideInitCode`.
+- Initialization always preloads `micropip`, then installs `pyodidePackages`, runs `pyodideInitCode`, and finally runs `preamble` when configured.
 - Execution is serialized internally, so concurrent `executeCell()` calls run one after another.
 - `always-live` mode syncs workspace state during execution, but it is a best-effort mode intended for top-level `for` and `while` loops rather than full streaming output.
 
