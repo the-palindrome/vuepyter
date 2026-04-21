@@ -221,6 +221,8 @@
           defaultWidth: 6,
           minWidth: 0.5,
           maxWidth: 64,
+          pathTransitionMs: 420,
+          pathTransitionSamples: 36,
           arrowScale: 2.8,
           arrowMin: 10,
           arrowMax: 34,
@@ -265,6 +267,44 @@
       ortho: 'orthogonal',
       manhattan: 'orthogonal',
       path: 'polyline',
+      stepped: 'step',
+      staircase: 'step',
+      stairs: 'step',
+      self: 'loop',
+      selfloop: 'loop',
+      'self-loop': 'loop',
+      looped: 'loop',
+      circular: 'radial',
+      polar: 'radial',
+    })
+    const GRAPH_LAYOUT_MODE_ALIASES = Object.freeze({
+      force: 'force',
+      spring: 'force',
+      'force-directed': 'force',
+      'force directed': 'force',
+      force_directed: 'force',
+      forcedirected: 'force',
+      circular: 'circular',
+      circle: 'circular',
+      shell: 'shell',
+      shells: 'shell',
+      radial: 'radial',
+      polar: 'radial',
+      tree: 'tree',
+      hierarchy: 'tree',
+      hierarchical: 'tree',
+      layered: 'tree',
+      dag: 'tree',
+      orthogonal: 'orthogonal',
+      grid: 'orthogonal',
+      rectilinear: 'orthogonal',
+      arc: 'arc',
+      arcs: 'arc',
+      bipartite: 'bipartite',
+      'two-layer': 'bipartite',
+      two_layer: 'bipartite',
+      random: 'random',
+      scatter: 'random',
     })
 
     const GRAPH_SNAPSHOT_SOURCE = `
@@ -275,7 +315,7 @@ import math
 # - Discover graph/camera/canvas objects from globals.
 # - Normalize to JSON-safe payload consumed by normalizeGraphPayload().
 # - Preserve stable identity fields so drag and animation patches can round-trip.
-# - Carry edge path style/spec metadata so JS can render non-linear paths.
+# - Carry graph layout and edge path style/spec metadata so JS can render non-linear layouts/paths.
 
 
 def __vuepyter_finite_float__(value, default=None):
@@ -529,6 +569,84 @@ def __vuepyter_parse_path_spec__(raw_spec):
     return None
 
 
+def __vuepyter_object_field__(source, field_name):
+    if source is None or not field_name:
+        return None
+
+    if isinstance(source, dict):
+        if field_name in source:
+            return source.get(field_name)
+        return None
+
+    try:
+        return getattr(source, field_name)
+    except Exception:
+        return None
+
+
+def __vuepyter_parse_layout_mode__(raw_mode):
+    if raw_mode is None:
+        return None
+    try:
+        mode = str(raw_mode).strip().lower()
+    except Exception:
+        return None
+    if not mode:
+        return None
+    return mode
+
+
+def __vuepyter_parse_graph_layout__(graph_obj):
+    metadata = getattr(graph_obj, "metadata", None)
+    raw_layout = None
+    for source in (metadata, graph_obj):
+        candidate = __vuepyter_object_field__(source, "layout")
+        if candidate is not None and not callable(candidate):
+            raw_layout = candidate
+            break
+
+    layout_mode = None
+    for source in (metadata, graph_obj):
+        for mode_key in ("layout_mode", "layoutMode", "layout_type", "layoutType"):
+            candidate_mode_raw = __vuepyter_object_field__(source, mode_key)
+            if callable(candidate_mode_raw):
+                continue
+            candidate_mode = __vuepyter_parse_layout_mode__(candidate_mode_raw)
+            if candidate_mode is not None:
+                layout_mode = candidate_mode
+                break
+        if layout_mode is not None:
+            break
+
+    parsed_layout = __vuepyter_json_safe__(raw_layout, depth=4, item_limit=48)
+    if isinstance(parsed_layout, str):
+        parsed_mode = __vuepyter_parse_layout_mode__(parsed_layout)
+        parsed_layout = {"mode": parsed_mode} if parsed_mode is not None else None
+    elif isinstance(parsed_layout, list):
+        parsed_layout = {"params": parsed_layout}
+    elif isinstance(parsed_layout, dict):
+        parsed_mode = __vuepyter_parse_layout_mode__(parsed_layout.get("mode"))
+        if parsed_mode is None:
+            parsed_mode = __vuepyter_parse_layout_mode__(parsed_layout.get("layout_mode"))
+        if parsed_mode is None:
+            parsed_mode = __vuepyter_parse_layout_mode__(parsed_layout.get("layoutMode"))
+        if parsed_mode is not None:
+            parsed_layout["mode"] = parsed_mode
+    elif parsed_layout is not None:
+        parsed_layout = None
+
+    if layout_mode is not None:
+        if isinstance(parsed_layout, dict):
+            if "mode" not in parsed_layout:
+                parsed_layout["mode"] = layout_mode
+        else:
+            parsed_layout = {"mode": layout_mode}
+
+    if isinstance(parsed_layout, dict):
+        return parsed_layout
+    return None
+
+
 def __vuepyter_parse_node_metadata__(raw):
     metadata = getattr(raw, "metadata", None)
     fill_color = __vuepyter_parse_color__(getattr(metadata, "fill_color", None))
@@ -744,6 +862,7 @@ def __vuepyter_canvas_payload__(canvas_name, canvas_obj):
 
 def __vuepyter_graph_to_payload__(graph_name, graph_obj):
     graph_title, graph_display_label = __vuepyter_graph_title_and_display_label__(graph_name, graph_obj)
+    graph_layout = __vuepyter_parse_graph_layout__(graph_obj)
     raw_nodes = __vuepyter_iter_items__(getattr(graph_obj, "nodes", []), limit=512)
     raw_edges = __vuepyter_iter_items__(getattr(graph_obj, "edges", []), limit=1024)
 
@@ -946,7 +1065,7 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
 
         edges.append(edge_payload)
 
-    return {
+    graph_payload = {
         "name": graph_name,
         "uid": str(id(graph_obj)),
         "title": graph_title,
@@ -955,6 +1074,9 @@ def __vuepyter_graph_to_payload__(graph_name, graph_obj):
         "nodes": nodes,
         "edges": edges,
     }
+    if graph_layout is not None:
+        graph_payload["layout"] = graph_layout
+    return graph_payload
 
 
 graph_payloads = []
@@ -1057,6 +1179,7 @@ json.dumps(payload, allow_nan=False)
         let notebookCameraOverrideUntil = 0
         let animationPlaybackWasActive = false
         let animationPlaybackProbeFramesRemaining = 0
+        let edgePathTransitionFrameHandle = null
 
         let worldBounds = { ...VISUALIZER_CONSTANTS.viewport.defaultWorldBounds }
         let kernelTaskQueue = Promise.resolve()
@@ -1392,6 +1515,7 @@ json.dumps(payload, allow_nan=False)
                 : (typeof rawGraph.name === 'string' && rawGraph.name ? rawGraph.name : 'graph'),
               displayLabel: typeof rawGraph.display_label === 'boolean' ? rawGraph.display_label : true,
               directed: !!rawGraph.directed,
+              layout: normalizeGraphLayout(rawGraph.layout),
               nodes,
               edges,
             })
@@ -1560,6 +1684,63 @@ json.dumps(payload, allow_nan=False)
             return output
           }
           return null
+        }
+
+        function normalizeGraphLayoutMode(rawMode) {
+          if (typeof rawMode !== 'string') {
+            return ''
+          }
+          const trimmed = rawMode.trim().toLowerCase()
+          if (!trimmed) {
+            return ''
+          }
+          const dashed = trimmed.replace(/[_\s]+/g, '-')
+          return (
+            GRAPH_LAYOUT_MODE_ALIASES[trimmed]
+            || GRAPH_LAYOUT_MODE_ALIASES[dashed]
+            || dashed
+          )
+        }
+
+        function normalizeGraphLayout(rawLayout) {
+          const normalizedLayout = normalizeEdgePathSpec(rawLayout)
+          if (normalizedLayout == null) {
+            return null
+          }
+
+          let layout = null
+          if (typeof normalizedLayout === 'string') {
+            const mode = normalizeGraphLayoutMode(normalizedLayout)
+            layout = mode ? { mode } : null
+          } else if (Array.isArray(normalizedLayout)) {
+            layout = { params: normalizedLayout }
+          } else if (typeof normalizedLayout === 'object') {
+            layout = { ...normalizedLayout }
+          }
+
+          if (!layout || typeof layout !== 'object') {
+            return null
+          }
+
+          const modeCandidate = (
+            Object.prototype.hasOwnProperty.call(layout, 'mode')
+              ? layout.mode
+              : (Object.prototype.hasOwnProperty.call(layout, 'layout_mode')
+                  ? layout.layout_mode
+                  : (Object.prototype.hasOwnProperty.call(layout, 'layoutMode')
+                      ? layout.layoutMode
+                      : (Object.prototype.hasOwnProperty.call(layout, 'type')
+                          ? layout.type
+                          : layout.name)))
+          )
+          const mode = normalizeGraphLayoutMode(modeCandidate)
+          if (mode) {
+            layout.mode = mode
+          } else if (Object.prototype.hasOwnProperty.call(layout, 'mode')) {
+            delete layout.mode
+          }
+
+          return Object.keys(layout).length > 0 ? layout : null
         }
 
         function edgePathSpecSignature(spec) {
@@ -1779,6 +1960,131 @@ json.dumps(payload, allow_nan=False)
           }
         }
 
+        function buildStepEdgePath({ edge, params }) {
+          const start = { x: edge.source.x, y: edge.source.y }
+          const end = { x: edge.target.x, y: edge.target.y }
+          const dx = end.x - start.x
+          const dy = end.y - start.y
+          if (Math.hypot(dx, dy) < 0.0001) {
+            return buildLoopEdgePath({ edge, params })
+          }
+
+          const orientationRaw = (
+            typeof params?.orientation === 'string'
+              ? params.orientation
+              : params?.axis
+          )
+          const orientation = typeof orientationRaw === 'string'
+            ? orientationRaw.trim().toLowerCase()
+            : 'auto'
+          const ratio = clamp(finiteNumber(params?.ratio) ?? finiteNumber(params?.t) ?? 0.5, 0.05, 0.95)
+          const bend = finiteNumber(params?.bend) ?? 0
+          const autoHorizontal = Math.abs(dx) >= Math.abs(dy)
+          const horizontal = (
+            orientation === 'horizontal'
+            || orientation === 'x'
+            || orientation === 'h'
+            || (
+              orientation !== 'vertical'
+              && orientation !== 'y'
+              && orientation !== 'v'
+              && autoHorizontal
+            )
+          )
+
+          const points = horizontal
+            ? [
+              start,
+              { x: start.x + dx * ratio + bend, y: start.y },
+              { x: start.x + dx * ratio + bend, y: end.y },
+              end,
+            ]
+            : [
+              start,
+              { x: start.x, y: start.y + dy * ratio + bend },
+              { x: end.x, y: start.y + dy * ratio + bend },
+              end,
+            ]
+
+          const prunedPoints = prunePolylinePoints(points)
+          if (prunedPoints.length < 2) {
+            return buildStraightEdgePath({ edge })
+          }
+          const labelSample = samplePolyline(prunedPoints, 0.5)
+          const endSample = samplePolyline(prunedPoints, 1)
+          return {
+            type: 'polyline',
+            points: prunedPoints,
+            labelPoint: labelSample.point,
+            labelTangent: labelSample.tangent,
+            endTangent: endSample.tangent,
+          }
+        }
+
+        function buildLoopEdgePath({ edge, params }) {
+          const start = { x: edge.source.x, y: edge.source.y }
+          const end = { x: edge.target.x, y: edge.target.y }
+          const dx = end.x - start.x
+          const dy = end.y - start.y
+          const distance = Math.hypot(dx, dy)
+          if (distance >= 0.0001) {
+            const loopParams = params && typeof params === 'object' ? { ...params } : {}
+            if (!Object.prototype.hasOwnProperty.call(loopParams, 'curvature')) {
+              loopParams.curvature = 0.55
+            }
+            return buildBezierEdgePath({ edge, params: loopParams })
+          }
+
+          const sourceRadius = finiteNumber(edge?.source?.radius) ?? 0
+          const targetRadius = finiteNumber(edge?.target?.radius) ?? 0
+          const nodeRadius = Math.max(sourceRadius, targetRadius, 18)
+          const loopRadius = clamp(
+            finiteNumber(params?.radius) ?? nodeRadius * 2.35,
+            nodeRadius + 12,
+            560,
+          )
+          const spread = clamp(
+            finiteNumber(params?.spread) ?? loopRadius * 0.92,
+            nodeRadius * 0.9,
+            loopRadius * 2.4,
+          )
+          const angleDegrees = finiteNumber(params?.angle) ?? finiteNumber(params?.rotation) ?? -90
+          const angle = (angleDegrees * Math.PI) / 180
+          const axis = { x: Math.cos(angle), y: Math.sin(angle) }
+          const normal = { x: -axis.y, y: axis.x }
+          const shoulderInset = clamp(nodeRadius * 0.78, 8, loopRadius * 0.85)
+          const points = prunePolylinePoints([
+            start,
+            {
+              x: start.x + normal.x * spread * 0.5 + axis.x * shoulderInset,
+              y: start.y + normal.y * spread * 0.5 + axis.y * shoulderInset,
+            },
+            {
+              x: start.x + axis.x * loopRadius,
+              y: start.y + axis.y * loopRadius,
+            },
+            {
+              x: start.x - normal.x * spread * 0.5 + axis.x * shoulderInset,
+              y: start.y - normal.y * spread * 0.5 + axis.y * shoulderInset,
+            },
+            end,
+          ])
+          if (points.length < 2) {
+            return buildStraightEdgePath({ edge })
+          }
+
+          const labelT = clamp(finiteNumber(params?.labelT) ?? 0.55, 0.1, 0.9)
+          const labelSample = samplePolyline(points, labelT)
+          const endSample = samplePolyline(points, 1)
+          return {
+            type: 'polyline',
+            points,
+            labelPoint: labelSample.point,
+            labelTangent: labelSample.tangent,
+            endTangent: endSample.tangent,
+          }
+        }
+
         function buildPolylineEdgePath({ edge, params }) {
           const source = { x: edge.source.x, y: edge.source.y }
           const target = { x: edge.target.x, y: edge.target.y }
@@ -1809,6 +2115,19 @@ json.dumps(payload, allow_nan=False)
             arcParams.curvature = 0.35
           }
           return buildBezierEdgePath({ edge, params: arcParams })
+        }
+
+        function buildRadialEdgePath({ edge, params }) {
+          const start = { x: edge.source.x, y: edge.source.y }
+          const end = { x: edge.target.x, y: edge.target.y }
+          if (Math.hypot(end.x - start.x, end.y - start.y) < 0.0001) {
+            return buildLoopEdgePath({ edge, params })
+          }
+          const radialParams = params && typeof params === 'object' ? { ...params } : {}
+          if (!Object.prototype.hasOwnProperty.call(radialParams, 'curvature')) {
+            radialParams.curvature = 0.18
+          }
+          return buildBezierEdgePath({ edge, params: radialParams })
         }
 
         function registerEdgePathFunction(style, resolver) {
@@ -1847,8 +2166,22 @@ json.dumps(payload, allow_nan=False)
           )
         }
 
-        function buildEdgePathGeometry(edge) {
-          const input = resolveEdgePathInput(edge)
+        function normalizedPathState(pathStyle, pathSpec) {
+          return {
+            style: normalizeEdgePathStyle(pathStyle, EDGE_PATH_STYLE_DEFAULT),
+            spec: normalizeEdgePathSpec(pathSpec),
+          }
+        }
+
+        function resolveEdgePathInputFromState(pathState) {
+          return resolveEdgePathInput({
+            pathStyle: pathState?.style,
+            pathSpec: pathState?.spec,
+          })
+        }
+
+        function buildEdgePathGeometryFromState(edge, pathState) {
+          const input = resolveEdgePathInputFromState(pathState)
           const resolver = resolveEdgePathFunction(input.style)
           try {
             return resolver({
@@ -1860,6 +2193,145 @@ json.dumps(payload, allow_nan=False)
           } catch {
             return buildStraightEdgePath({ edge, style: EDGE_PATH_STYLE_DEFAULT, params: {}, spec: null })
           }
+        }
+
+        function lerp(a, b, t) {
+          return a + (b - a) * t
+        }
+
+        function sampleEdgePathGeometry(geometry, tRaw = 0.5) {
+          const t = clamp(Number(tRaw) || 0, 0, 1)
+          if (!geometry || typeof geometry !== 'object') {
+            return {
+              point: { x: 0, y: 0 },
+              tangent: { x: 1, y: 0 },
+            }
+          }
+
+          if (geometry.type === 'quadratic' && geometry.start && geometry.control && geometry.end) {
+            return {
+              point: quadraticPoint(geometry.start, geometry.control, geometry.end, t),
+              tangent: quadraticTangent(geometry.start, geometry.control, geometry.end, t),
+            }
+          }
+
+          if (geometry.type === 'polyline' && Array.isArray(geometry.points) && geometry.points.length >= 2) {
+            return samplePolyline(geometry.points, t)
+          }
+
+          if (geometry.start && geometry.end) {
+            return {
+              point: {
+                x: lerp(geometry.start.x, geometry.end.x, t),
+                y: lerp(geometry.start.y, geometry.end.y, t),
+              },
+              tangent: normalizeDirection(geometry.end.x - geometry.start.x, geometry.end.y - geometry.start.y),
+            }
+          }
+
+          return {
+            point: { x: 0, y: 0 },
+            tangent: { x: 1, y: 0 },
+          }
+        }
+
+        function blendEdgePathGeometry(fromGeometry, toGeometry, progress) {
+          const blend = clamp(Number(progress) || 0, 0, 1)
+          if (blend <= 0) {
+            return fromGeometry
+          }
+          if (blend >= 1) {
+            return toGeometry
+          }
+          if (!fromGeometry) {
+            return toGeometry
+          }
+          if (!toGeometry) {
+            return fromGeometry
+          }
+
+          const fromPointHint = Array.isArray(fromGeometry?.points) ? fromGeometry.points.length : 3
+          const toPointHint = Array.isArray(toGeometry?.points) ? toGeometry.points.length : 3
+          const structureHint = Math.max(fromPointHint, toPointHint) * 2
+          const transitionTypeChanged = fromGeometry?.type !== toGeometry?.type
+          const sampleCount = Math.max(
+            10,
+            Math.floor(Number(VISUALIZER_CONSTANTS.render.edge.pathTransitionSamples) || 36),
+            structureHint,
+            transitionTypeChanged ? 26 : 0,
+          )
+          const points = []
+          for (let index = 0; index <= sampleCount; index += 1) {
+            const t = index / sampleCount
+            const fromSample = sampleEdgePathGeometry(fromGeometry, t)
+            const toSample = sampleEdgePathGeometry(toGeometry, t)
+            points.push({
+              x: lerp(fromSample.point.x, toSample.point.x, blend),
+              y: lerp(fromSample.point.y, toSample.point.y, blend),
+            })
+          }
+
+          const prunedPoints = prunePolylinePoints(points)
+          if (prunedPoints.length < 2) {
+            return toGeometry
+          }
+          const labelSample = samplePolyline(prunedPoints, 0.5)
+          const endSample = samplePolyline(prunedPoints, 1)
+          return {
+            type: 'polyline',
+            points: prunedPoints,
+            labelPoint: labelSample.point,
+            labelTangent: labelSample.tangent,
+            endTangent: endSample.tangent,
+          }
+        }
+
+        function edgePathTransitionDurationMs(rawDuration = null) {
+          const configured = Number(
+            rawDuration == null ? VISUALIZER_CONSTANTS.render.edge.pathTransitionMs : rawDuration,
+          )
+          if (!Number.isFinite(configured)) {
+            return 420
+          }
+          return clamp(configured, 80, 2600)
+        }
+
+        function easeInOutSmootherStep(tRaw) {
+          const t = clamp(Number(tRaw) || 0, 0, 1)
+          // Quintic smootherstep for softer acceleration/deceleration and reduced visual snapping.
+          return t * t * t * (t * ((t * 6) - 15) + 10)
+        }
+
+        function buildEdgePathGeometry(edge) {
+          const currentPathState = normalizedPathState(edge?.pathStyle, edge?.pathSpec)
+          const transition = edge?.pathTransition
+          if (transition && typeof transition === 'object') {
+            const startedAt = Number(transition.startedAt)
+            const durationMs = edgePathTransitionDurationMs(transition.durationMs)
+            const hasTiming = Number.isFinite(startedAt)
+            const progress = hasTiming
+              ? clamp((performance.now() - startedAt) / durationMs, 0, 1)
+              : 1
+            const fromState = normalizedPathState(
+              transition?.from?.style ?? currentPathState.style,
+              transition?.from?.spec ?? currentPathState.spec,
+            )
+            const toState = normalizedPathState(
+              transition?.to?.style ?? currentPathState.style,
+              transition?.to?.spec ?? currentPathState.spec,
+            )
+
+            if (progress >= 1) {
+              edge.pathTransition = null
+              return buildEdgePathGeometryFromState(edge, toState)
+            }
+
+            const fromGeometry = buildEdgePathGeometryFromState(edge, fromState)
+            const toGeometry = buildEdgePathGeometryFromState(edge, toState)
+            return blendEdgePathGeometry(fromGeometry, toGeometry, easeInOutSmootherStep(progress))
+          }
+
+          return buildEdgePathGeometryFromState(edge, currentPathState)
         }
 
         function traceEdgePath(ctx, pathGeometry) {
@@ -1890,8 +2362,11 @@ json.dumps(payload, allow_nan=False)
         registerEdgePathFunction('straight', buildStraightEdgePath)
         registerEdgePathFunction('bezier', buildBezierEdgePath)
         registerEdgePathFunction('orthogonal', buildOrthogonalEdgePath)
+        registerEdgePathFunction('step', buildStepEdgePath)
+        registerEdgePathFunction('loop', buildLoopEdgePath)
         registerEdgePathFunction('polyline', buildPolylineEdgePath)
         registerEdgePathFunction('arc', buildArcEdgePath)
+        registerEdgePathFunction('radial', buildRadialEdgePath)
 
         function nodeLabelFontSize(node, nodeRadiusValue = null) {
           const nodeSizing = VISUALIZER_CONSTANTS.render.node
@@ -1915,6 +2390,37 @@ json.dumps(payload, allow_nan=False)
           const nodes = graph.nodes
           const edges = graph.edges
           const total = nodes.length
+          const graphLayout = graph && typeof graph.layout === 'object' ? graph.layout : null
+          const layoutMode = normalizeGraphLayoutMode(graphLayout?.mode)
+          const knownLayoutMode = (
+            layoutMode === 'force'
+            || layoutMode === 'spectral'
+            || layoutMode === 'spiral'
+            || layoutMode === 'circular'
+            || layoutMode === 'shell'
+            || layoutMode === 'radial'
+            || layoutMode === 'tree'
+            || layoutMode === 'orthogonal'
+            || layoutMode === 'arc'
+            || layoutMode === 'bipartite'
+            || layoutMode === 'random'
+          )
+          const forceLikeLayout = !layoutMode || layoutMode === 'force' || !knownLayoutMode
+          const spectralLayout = layoutMode === 'spectral'
+          const spiralLayout = layoutMode === 'spiral'
+          const circularLayout = layoutMode === 'circular' || layoutMode === 'radial' || layoutMode === 'shell'
+          const shellLayout = layoutMode === 'shell'
+          const treeLayout = layoutMode === 'tree'
+          const orthogonalLayout = layoutMode === 'orthogonal'
+          const arcLayout = layoutMode === 'arc'
+          const bipartiteLayout = layoutMode === 'bipartite'
+          const randomLayout = layoutMode === 'random'
+          const configuredRadius = finiteNumber(graphLayout?.radius)
+          const spreadRadius = (
+            configuredRadius !== null && configuredRadius > 0
+              ? configuredRadius
+              : Math.max(120, total * 24)
+          )
 
           if (total === 0) {
             return {
@@ -1929,16 +2435,161 @@ json.dumps(payload, allow_nan=False)
             }
           }
 
+          let treeDepthByIndex = null
+          let treeRankByIndex = null
+          let treeLayerSizes = null
+          let treeLayerCount = 0
+
+          if (treeLayout) {
+            const indexById = new Map(nodes.map((node, index) => [node.id, index]))
+            const depths = new Array(total).fill(0)
+            const maxIterations = Math.min(256, Math.max(2, total * 2))
+            for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+              let changed = false
+              for (const edge of edges) {
+                const sourceIndex = indexById.get(edge.source)
+                const targetIndex = indexById.get(edge.target)
+                if (sourceIndex == null || targetIndex == null || sourceIndex === targetIndex) {
+                  continue
+                }
+                const candidateDepth = depths[sourceIndex] + 1
+                if (candidateDepth > depths[targetIndex]) {
+                  depths[targetIndex] = candidateDepth
+                  changed = true
+                }
+              }
+              if (!changed) {
+                break
+              }
+            }
+
+            const rawMaxDepth = depths.reduce((maxDepth, depth) => Math.max(maxDepth, depth), 0)
+            const maxDepth = Math.min(rawMaxDepth, Math.max(1, total - 1))
+            const clampedDepths = depths.map((depth) => clamp(depth, 0, maxDepth))
+            const layers = Array.from({ length: maxDepth + 1 }, () => [])
+            for (let index = 0; index < total; index += 1) {
+              layers[clampedDepths[index]].push(index)
+            }
+            const ranks = new Array(total).fill(0)
+            const layerSizes = new Array(layers.length).fill(1)
+            for (let layerIndex = 0; layerIndex < layers.length; layerIndex += 1) {
+              const layer = layers[layerIndex]
+              const size = Math.max(1, layer.length)
+              layerSizes[layerIndex] = size
+              for (let rank = 0; rank < layer.length; rank += 1) {
+                ranks[layer[rank]] = rank
+              }
+            }
+
+            treeDepthByIndex = clampedDepths
+            treeRankByIndex = ranks
+            treeLayerSizes = layerSizes
+            treeLayerCount = layers.length
+          }
+
+          function resolveAutoNodePosition(node, index) {
+            const nodeId = String(node?.id ?? index)
+            const angle = (Math.PI * 2 * index) / Math.max(1, total)
+
+            if (orthogonalLayout) {
+              const columns = Math.max(1, Math.ceil(Math.sqrt(total)))
+              const rows = Math.max(1, Math.ceil(total / columns))
+              const column = index % columns
+              const row = Math.floor(index / columns)
+              return {
+                x: (column - (columns - 1) * 0.5) * 112,
+                y: (row - (rows - 1) * 0.5) * 96,
+              }
+            }
+
+            if (bipartiteLayout) {
+              const leftCount = Math.ceil(total * 0.5)
+              const onLeft = index < leftCount
+              const rank = onLeft ? index : index - leftCount
+              const rankTotal = onLeft ? leftCount : Math.max(1, total - leftCount)
+              return {
+                x: (onLeft ? -1 : 1) * Math.max(120, spreadRadius * 0.72),
+                y: (rank - (rankTotal - 1) * 0.5) * 92,
+              }
+            }
+
+            if (treeLayout && treeDepthByIndex && treeRankByIndex && treeLayerSizes) {
+              const depth = treeDepthByIndex[index] ?? 0
+              const layerSize = treeLayerSizes[depth] ?? 1
+              const rank = treeRankByIndex[index] ?? 0
+              return {
+                x: (depth - (treeLayerCount - 1) * 0.5) * 134,
+                y: (rank - (layerSize - 1) * 0.5) * 96,
+              }
+            }
+
+            if (arcLayout) {
+              const startAngle = -Math.PI * 0.92
+              const endAngle = -Math.PI * 0.08
+              const t = total <= 1 ? 0.5 : index / (total - 1)
+              const angleOnArc = startAngle + (endAngle - startAngle) * t
+              return {
+                x: Math.cos(angleOnArc) * spreadRadius,
+                y: Math.sin(angleOnArc) * spreadRadius * 0.72,
+              }
+            }
+
+            if (randomLayout) {
+              const xNoise = (hashString(`${nodeId}:x`) % 2001) / 1000 - 1
+              const yNoise = (hashString(`${nodeId}:y`) % 2001) / 1000 - 1
+              return {
+                x: xNoise * spreadRadius,
+                y: yNoise * spreadRadius * 0.82,
+              }
+            }
+
+            if (spiralLayout) {
+              const baseRadius = Math.max(42, spreadRadius * 0.18)
+              const radiusStep = Math.max(26, spreadRadius * 0.11)
+              const theta = index * 0.9
+              const radial = baseRadius + radiusStep * index
+              return {
+                x: Math.cos(theta) * radial,
+                y: Math.sin(theta) * radial * 0.78,
+              }
+            }
+
+            if (spectralLayout) {
+              const degreeBias = (hashString(`${nodeId}:deg`) % 9) / 14
+              const ringScale = 0.6 + degreeBias
+              return {
+                x: Math.cos(angle) * spreadRadius * ringScale,
+                y: Math.sin(angle) * spreadRadius * ringScale,
+              }
+            }
+
+            if (circularLayout) {
+              const shellScale = shellLayout
+                ? (0.58 + (hashString(`${nodeId}:shell`) % 3) * 0.21)
+                : 1
+              return {
+                x: Math.cos(angle) * spreadRadius * shellScale,
+                y: Math.sin(angle) * spreadRadius * shellScale,
+              }
+            }
+
+            // Force/default mode keeps the existing circular seed + deterministic jitter.
+            const jitter = ((hashString(nodeId) % 1000) / 1000 - 0.5) * 14
+            const defaultRadius = Math.max(120, total * 24)
+            return {
+              x: Math.cos(angle) * defaultRadius + jitter,
+              y: Math.sin(angle) * defaultRadius - jitter,
+            }
+          }
+
           const positions = nodes.map((node, index) => {
             const storedPos = Array.isArray(node.pos) && node.pos.length >= 2 ? node.pos : null
             const fixed = storedPos !== null
-            const angle = (Math.PI * 2 * index) / Math.max(1, total)
-            const jitter = ((hashString(node.id) % 1000) / 1000 - 0.5) * 14
-            const spreadRadius = Math.max(120, total * 24)
+            const autoPosition = resolveAutoNodePosition(node, index)
             const radius = nodeRadius(node)
             return {
-              x: fixed ? Number(storedPos[0]) : Math.cos(angle) * spreadRadius + jitter,
-              y: fixed ? Number(storedPos[1]) : Math.sin(angle) * spreadRadius - jitter,
+              x: fixed ? Number(storedPos[0]) : autoPosition.x,
+              y: fixed ? Number(storedPos[1]) : autoPosition.y,
               fixed,
               radius,
               labelSize: nodeLabelFontSize(node, radius),
@@ -1953,7 +2604,7 @@ json.dumps(payload, allow_nan=False)
           const indexById = new Map(nodes.map((node, index) => [node.id, index]))
           const movableCount = positions.reduce((count, node) => count + (node.fixed ? 0 : 1), 0)
 
-          if (movableCount > 0 && total <= 84 && edges.length > 0) {
+          if (forceLikeLayout && movableCount > 0 && total <= 84 && edges.length > 0) {
             const springLength = clamp(180 / Math.sqrt(total), 48, 110)
             let temperature = Math.max(18, springLength * 0.36)
 
@@ -2153,6 +2804,30 @@ json.dumps(payload, allow_nan=False)
             }))
 
             const pointById = new Map(worldNodes.map((node) => [node.id, node]))
+            const previousRenderEdges = Array.isArray(previousRender?.edges) ? previousRender.edges : []
+            function findPreviousRenderedEdgeForNextEdge(nextEdge) {
+              if (!Array.isArray(previousRenderEdges) || previousRenderEdges.length === 0) {
+                return null
+              }
+              if (typeof nextEdge?.uid === 'string' && nextEdge.uid) {
+                const byUid = previousRenderEdges.find((candidate) => candidate?.uid === nextEdge.uid)
+                if (byUid) {
+                  return byUid
+                }
+              }
+              if (Number.isInteger(nextEdge?.edgeIndex)) {
+                const byIndex = previousRenderEdges.find((candidate) => candidate?.edgeIndex === nextEdge.edgeIndex)
+                if (byIndex) {
+                  return byIndex
+                }
+              }
+              return previousRenderEdges.find((candidate) => (
+                String(candidate?.sourceId ?? '') === String(nextEdge?.sourceId ?? '')
+                && String(candidate?.targetId ?? '') === String(nextEdge?.targetId ?? '')
+                && String(candidate?.label ?? '') === String(nextEdge?.label ?? '')
+              )) || null
+            }
+
             const worldEdges = local.edges
               .map((edge) => {
                 const source = pointById.get(edge.source)
@@ -2163,7 +2838,7 @@ json.dumps(payload, allow_nan=False)
                 const width = edgeStrokeWidth(edge)
                 const pathStyle = normalizeEdgePathStyle(edge.pathStyle, EDGE_PATH_STYLE_DEFAULT)
                 const pathSpec = normalizeEdgePathSpec(edge.pathSpec)
-                return {
+                const nextEdge = {
                   uid: typeof edge.uid === 'string' ? edge.uid : '',
                   edgeIndex: Number.isInteger(edge.edgeIndex) && edge.edgeIndex >= 0 ? edge.edgeIndex : null,
                   source,
@@ -2184,6 +2859,44 @@ json.dumps(payload, allow_nan=False)
                   pathStyle,
                   pathSpec,
                 }
+                const previousEdge = findPreviousRenderedEdgeForNextEdge(nextEdge)
+                if (previousEdge) {
+                  const previousPath = normalizedPathState(previousEdge.pathStyle, previousEdge.pathSpec)
+                  const nextPath = normalizedPathState(pathStyle, pathSpec)
+                  if (
+                    previousPath.style !== nextPath.style
+                    || !edgePathSpecEquals(previousPath.spec, nextPath.spec)
+                  ) {
+                    nextEdge.pathTransition = {
+                      from: previousPath,
+                      to: nextPath,
+                      startedAt: performance.now(),
+                      durationMs: edgePathTransitionDurationMs(),
+                    }
+                  } else if (previousEdge.pathTransition && typeof previousEdge.pathTransition === 'object') {
+                    const previousTransition = previousEdge.pathTransition
+                    const transitionFrom = normalizedPathState(
+                      previousTransition?.from?.style,
+                      previousTransition?.from?.spec,
+                    )
+                    const transitionTo = normalizedPathState(
+                      previousTransition?.to?.style ?? previousPath.style,
+                      previousTransition?.to?.spec ?? previousPath.spec,
+                    )
+                    if (
+                      transitionTo.style === nextPath.style
+                      && edgePathSpecEquals(transitionTo.spec, nextPath.spec)
+                    ) {
+                      nextEdge.pathTransition = {
+                        from: transitionFrom,
+                        to: transitionTo,
+                        startedAt: Number(previousTransition.startedAt),
+                        durationMs: edgePathTransitionDurationMs(previousTransition.durationMs),
+                      }
+                    }
+                  }
+                }
+                return nextEdge
               })
               .filter((edge) => edge !== null)
 
@@ -3810,6 +4523,76 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           return applied
         }
 
+        function hasActiveEdgePathTransitions(nowMs = performance.now()) {
+          const graphs = graphGallery.value
+          if (!Array.isArray(graphs) || graphs.length === 0) {
+            return false
+          }
+          for (const graph of graphs) {
+            const renderEdges = graph?.render?.edges
+            if (!Array.isArray(renderEdges) || renderEdges.length === 0) {
+              continue
+            }
+            for (const edge of renderEdges) {
+              const transition = edge?.pathTransition
+              if (!transition || typeof transition !== 'object') {
+                continue
+              }
+              const startedAt = Number(transition.startedAt)
+              const durationMs = edgePathTransitionDurationMs(transition.durationMs)
+              if (Number.isFinite(startedAt) && nowMs < startedAt + durationMs - 0.5) {
+                return true
+              }
+              edge.pathTransition = null
+            }
+          }
+          return false
+        }
+
+        function cancelEdgePathTransitionFrame() {
+          if (edgePathTransitionFrameHandle !== null) {
+            window.cancelAnimationFrame(edgePathTransitionFrameHandle)
+            edgePathTransitionFrameHandle = null
+          }
+        }
+
+        function scheduleEdgePathTransitionFrame() {
+          if (edgePathTransitionFrameHandle !== null || !isComponentAlive) {
+            return
+          }
+          const tick = () => {
+            edgePathTransitionFrameHandle = null
+            if (!isComponentAlive) {
+              return
+            }
+            drawGallery()
+            if (hasActiveEdgePathTransitions()) {
+              edgePathTransitionFrameHandle = window.requestAnimationFrame(tick)
+            }
+          }
+          edgePathTransitionFrameHandle = window.requestAnimationFrame(tick)
+        }
+
+        function beginEdgePathTransition(edge, fromState, toState, durationMs = null) {
+          if (!edge || typeof edge !== 'object') {
+            return false
+          }
+          const from = normalizedPathState(fromState?.style, fromState?.spec)
+          const to = normalizedPathState(toState?.style, toState?.spec)
+          if (from.style === to.style && edgePathSpecEquals(from.spec, to.spec)) {
+            edge.pathTransition = null
+            return false
+          }
+          edge.pathTransition = {
+            from,
+            to,
+            startedAt: performance.now(),
+            durationMs: edgePathTransitionDurationMs(durationMs),
+          }
+          scheduleEdgePathTransitionFrame()
+          return true
+        }
+
         function updateEdgeStyleInRender(update) {
           if (!update || typeof update !== 'object' || !update.style || typeof update.style !== 'object') {
             return false
@@ -3822,6 +4605,11 @@ json.dumps(__vuepyter_output__, allow_nan=False)
           const modelEdge = findModelEdgeForRenderedEdge(graph, edge)
           const style = update.style
           let applied = false
+          const previousPath = normalizedPathState(edge.pathStyle, edge.pathSpec)
+          let nextPathStyle = previousPath.style
+          let nextPathSpec = previousPath.spec
+          let pathStyleChanged = false
+          let pathSpecChanged = false
 
           if (typeof style.color === 'string' && style.color) {
             const nextColor = edgeColor({ color: style.color })
@@ -3847,24 +4635,25 @@ json.dumps(__vuepyter_output__, allow_nan=False)
             }
           }
           if (Object.prototype.hasOwnProperty.call(style, 'pathStyle')) {
-            const nextPathStyle = normalizeEdgePathStyle(style.pathStyle, EDGE_PATH_STYLE_DEFAULT)
-            if (edge.pathStyle !== nextPathStyle) {
-              edge.pathStyle = nextPathStyle
-              applied = true
-            }
+            nextPathStyle = normalizeEdgePathStyle(style.pathStyle, EDGE_PATH_STYLE_DEFAULT)
+            pathStyleChanged = previousPath.style !== nextPathStyle
             if (modelEdge) {
               modelEdge.pathStyle = nextPathStyle
             }
           }
           if (Object.prototype.hasOwnProperty.call(style, 'pathSpec')) {
-            const nextPathSpec = normalizeEdgePathSpec(style.pathSpec)
-            if (!edgePathSpecEquals(edge.pathSpec, nextPathSpec)) {
-              edge.pathSpec = nextPathSpec
-              applied = true
-            }
+            nextPathSpec = normalizeEdgePathSpec(style.pathSpec)
+            pathSpecChanged = !edgePathSpecEquals(previousPath.spec, nextPathSpec)
             if (modelEdge) {
               modelEdge.pathSpec = nextPathSpec
             }
+          }
+          if (pathStyleChanged || pathSpecChanged) {
+            const nextPath = normalizedPathState(nextPathStyle, nextPathSpec)
+            edge.pathStyle = nextPath.style
+            edge.pathSpec = nextPath.spec
+            beginEdgePathTransition(edge, previousPath, nextPath)
+            applied = true
           }
 
           return applied
@@ -5061,6 +5850,9 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           }
 
           drawGallery()
+          if (hasActiveEdgePathTransitions()) {
+            scheduleEdgePathTransitionFrame()
+          }
         }
 
         async function refreshGraphs() {
@@ -5378,6 +6170,7 @@ json.dumps({"applied": __vuepyter_applied_keys__})
           cameraSyncJob.cancel()
           animationPlaybackJob.cancel()
           nodePosSyncJob.cancel()
+          cancelEdgePathTransitionFrame()
         })
 
         return {
