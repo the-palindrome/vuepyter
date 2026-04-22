@@ -66,6 +66,25 @@ describe('components/CellOutput', () => {
     expect(img.attributes('alt')).toBe('cell output')
   })
 
+  it('renders image/png output for execute_result payloads', () => {
+    const outputs: CellOutputType[] = [
+      {
+        output_type: 'execute_result',
+        execution_count: 3,
+        data: {
+          'image/png': 'abc123',
+        },
+        metadata: {},
+      },
+    ]
+
+    const wrapper = mount(CellOutput, { props: { outputs } })
+    const img = wrapper.find('img.vuepyter-output-image')
+
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe('data:image/png;base64,abc123')
+  })
+
   it('renders ANSI traceback HTML for error outputs', () => {
     const outputs: CellOutputType[] = [
       {
@@ -93,6 +112,29 @@ describe('components/CellOutput', () => {
     })
 
     expect(wrapper.get('.vuepyter-output-wrap').attributes('style')).toContain('max-height: 240px;')
+  })
+
+  it('does not constrain output height when image output is present', () => {
+    const outputs: CellOutputType[] = [
+      {
+        output_type: 'display_data',
+        data: {
+          'image/png': 'iVBORw0KGgoAAAANSUhEUgAAAAUA',
+        },
+        metadata: {},
+      },
+    ]
+
+    const wrapper = mount(CellOutput, {
+      props: {
+        outputs,
+        maxOutputHeight: 240,
+      },
+    })
+
+    const style = wrapper.get('.vuepyter-output-wrap').attributes('style')
+    expect(style).toContain('max-height: none;')
+    expect(style).toContain('overflow: visible;')
   })
 
   it('can hide empty output container when hideEmpty is enabled', () => {

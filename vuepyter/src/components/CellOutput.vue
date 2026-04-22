@@ -19,13 +19,31 @@ const props = withDefaults(
   },
 )
 
-const outputStyle = computed(() => ({
-  maxHeight: props.maxOutputHeight === false ? 'none' : `${props.maxOutputHeight ?? 400}px`,
-  overflow: props.maxOutputHeight === false ? 'visible' : 'auto',
-}))
-
 const resolvedOutputs = computed(() => props.outputs ?? [])
 const shouldRender = computed(() => resolvedOutputs.value.length > 0 || !(props.hideEmpty ?? false))
+
+const hasImageOutput = computed(() =>
+  resolvedOutputs.value.some((output) => {
+    if (output.output_type === 'stream' || output.output_type === 'error') {
+      return false
+    }
+    return Object.keys(output.data ?? {}).some((mimeType) => mimeType.startsWith('image/'))
+  }),
+)
+
+const outputStyle = computed(() => {
+  if (hasImageOutput.value) {
+    return {
+      maxHeight: 'none',
+      overflow: 'visible',
+    }
+  }
+
+  return {
+    maxHeight: props.maxOutputHeight === false ? 'none' : `${props.maxOutputHeight ?? 400}px`,
+    overflow: props.maxOutputHeight === false ? 'visible' : 'auto',
+  }
+})
 
 const asText = (value: unknown): string => {
   if (Array.isArray(value)) {

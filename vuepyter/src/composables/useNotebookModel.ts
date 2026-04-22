@@ -31,6 +31,10 @@ function toMimeBundle(value: unknown): OutputMimeBundle {
   return { ...(value as OutputMimeBundle) }
 }
 
+/**
+ * Coerces potentially partial output payloads into the canonical cell output
+ * shapes used by the reactive notebook model.
+ */
 function normalizeOutput(output: Partial<CellOutput> & { output_type: string }): CellOutput {
   const raw = output as Record<string, unknown> & { output_type: string }
 
@@ -105,6 +109,10 @@ function toCodeCell(sourceCell: NotebookCell, cellType: NotebookCellType): Noteb
   })
 }
 
+/**
+ * Reactive notebook state manager used by the Vuepyter component and by
+ * advanced host integrations that want cell-level operations.
+ */
 export function useNotebookModel(options: UseNotebookModelOptions = {}): UseNotebookModelReturn {
   const allowedCellTypes = computed<NotebookCellType[]>(() => {
     const provided = toValue(options.allowedCellTypes)
@@ -366,6 +374,9 @@ export function useNotebookModel(options: UseNotebookModelOptions = {}): UseNote
     return serializeNotebookDocument(notebook.value)
   }
 
+  /**
+   * Alias kept for API readability where nbformat terminology is preferred.
+   */
   function toNbformatDocument() {
     return serialize()
   }

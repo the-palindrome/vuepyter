@@ -17,6 +17,14 @@ interface MockPyodide extends PyodideInterface {
   terminate: ReturnType<typeof vi.fn>
 }
 
+function createFetchResponse(body: string, status = 200): Pick<Response, 'ok' | 'status' | 'text'> {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => body,
+  }
+}
+
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T | PromiseLike<T>) => void
   let reject!: (reason?: unknown) => void
@@ -34,16 +42,20 @@ function createMockPyodide(): MockPyodide {
     ['callable', () => 'skip'],
   ])
 
-  let stdoutHandler: ((value: string) => void) | undefined
-  let stderrHandler: ((value: string) => void) | undefined
+  let stdoutBatchedHandler: ((value: string) => void) | undefined
+  let stderrBatchedHandler: ((value: string) => void) | undefined
+  let stdoutRawHandler: ((value: number | string) => void) | undefined
+  let stderrRawHandler: ((value: number | string) => void) | undefined
 
   const instance = {
     runPythonAsync: vi.fn(async () => undefined),
     setStdout: vi.fn((options: PyodideStdIOOptions) => {
-      stdoutHandler = options.batched
+      stdoutBatchedHandler = options.batched
+      stdoutRawHandler = options.raw
     }),
     setStderr: vi.fn((options: PyodideStdIOOptions) => {
-      stderrHandler = options.batched
+      stderrBatchedHandler = options.batched
+      stderrRawHandler = options.raw
     }),
     loadPackage: vi.fn(async () => undefined),
     interruptExecution: vi.fn(() => undefined),
@@ -59,10 +71,24 @@ function createMockPyodide(): MockPyodide {
     close: vi.fn(),
     terminate: vi.fn(),
     __emitStdout(value: string) {
-      stdoutHandler?.(value)
+      if (stdoutRawHandler) {
+        const bytes = new TextEncoder().encode(value)
+        for (const byte of bytes) {
+          stdoutRawHandler(byte)
+        }
+        return
+      }
+      stdoutBatchedHandler?.(value)
     },
     __emitStderr(value: string) {
-      stderrHandler?.(value)
+      if (stderrRawHandler) {
+        const bytes = new TextEncoder().encode(value)
+        for (const byte of bytes) {
+          stderrRawHandler(byte)
+        }
+        return
+      }
+      stderrBatchedHandler?.(value)
     },
     __globalsMap: globalsMap,
   } as unknown as MockPyodide
@@ -97,11 +123,12 @@ describe('composables/usePyodideKernel', () => {
     })
     expect(instance.loadPackage).not.toHaveBeenCalled()
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(1, 'import micropip')
+    expect(String(instance.runPythonAsync.mock.calls[1]?.[0])).toContain('MPLBACKEND')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(
-      2,
+      3,
       'await micropip.install(["numpy","pandas"])',
     )
-    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(3, 'x = 1')
+    expect(instance.runPythonAsync).toHaveBeenNthCalledWith(4, 'x = 1')
     expect(kernel.status.value).toBe('ready')
     expect(kernel.isReady.value).toBe(true)
     expect(kernel.workspace.value).toEqual({ visible: 7 })
@@ -122,8 +149,9 @@ describe('composables/usePyodideKernel', () => {
       packages: ['micropip'],
     })
     expect(instance.loadPackage).not.toHaveBeenCalled()
-    expect(instance.runPythonAsync).toHaveBeenCalledTimes(1)
+    expect(instance.runPythonAsync).toHaveBeenCalledTimes(2)
     expect(instance.runPythonAsync).toHaveBeenCalledWith('import micropip')
+    expect(String(instance.runPythonAsync.mock.calls[1]?.[0])).toContain('MPLBACKEND')
   })
 
   it('falls back to explicit micropip loading when bootstrap packages are not importable yet', async () => {
@@ -145,6 +173,77 @@ describe('composables/usePyodideKernel', () => {
     expect(instance.loadPackage).toHaveBeenCalledWith('micropip')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(1, 'import micropip')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(2, 'import micropip')
+    expect(String(instance.runPythonAsync.mock.calls[2]?.[0])).toContain('MPLBACKEND')
+  })
+
+  it('runs inline preamble source during initialization', async () => {
+    const instance = createMockPyodide()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+
+    const kernel = usePyodideKernel({
+      preamble: 'import numpy as np\nx = 2',
+    })
+
+    await kernel.initialize()
+
+    expect(instance.runPythonAsync).toHaveBeenCalledWith('import numpy as np\nx = 2')
+  })
+
+  it('loads and executes a .py preamble file before kernel ready', async () => {
+    const instance = createMockPyodide()
+    const fetchMock = vi.fn(async () => createFetchResponse('import numpy as np\nx = 2'))
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const kernel = usePyodideKernel({
+      preamble: '/fixtures/preamble.py',
+    })
+
+    await kernel.initialize()
+
+    expect(fetchMock).toHaveBeenCalledWith('/fixtures/preamble.py', {
+      cache: 'no-store',
+    })
+    expect(instance.runPythonAsync).toHaveBeenCalledWith('import numpy as np\nx = 2')
+  })
+
+  it('loads notebook preambles and executes code cells only', async () => {
+    const instance = createMockPyodide()
+    const notebook = JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          cell_type: 'markdown',
+          source: ['# Ignore me'],
+        },
+        {
+          cell_type: 'code',
+          source: ['import numpy as np'],
+        },
+        {
+          cell_type: 'code',
+          source: ['x = 2'],
+        },
+      ],
+    })
+
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+    vi.stubGlobal('fetch', vi.fn(async () => createFetchResponse(notebook)))
+
+    const kernel = usePyodideKernel({
+      preamble: '/fixtures/preamble.ipynb',
+    })
+
+    await kernel.initialize()
+
+    const calledSources = instance.runPythonAsync.mock.calls.map(([source]) => String(source))
+    const preambleSource = calledSources.find((source) => source.includes('import numpy as np'))
+    expect(preambleSource).toBeTruthy()
+    expect(preambleSource).toContain('import numpy as np')
+    expect(preambleSource).toContain('x = 2')
+    expect(preambleSource).not.toContain('# Ignore me')
   })
 
   it('executes a cell with stdout/stderr capture and execute_result output', async () => {
@@ -190,8 +289,8 @@ describe('composables/usePyodideKernel', () => {
 
     const finalStdout = instance.setStdout.mock.calls.at(-1)?.[0] as PyodideStdIOOptions
     const finalStderr = instance.setStderr.mock.calls.at(-1)?.[0] as PyodideStdIOOptions
-    expect(typeof finalStdout.batched).toBe('function')
-    expect(typeof finalStderr.batched).toBe('function')
+    expect(typeof finalStdout.raw).toBe('function')
+    expect(typeof finalStderr.raw).toBe('function')
   })
 
   it('returns stream + error outputs when execution fails', async () => {
@@ -264,6 +363,56 @@ describe('composables/usePyodideKernel', () => {
     expect(onWorkspaceSync.mock.calls.length).toBeGreaterThan(0)
   })
 
+  it('captures matplotlib figures as display_data output', async () => {
+    const instance = createMockPyodide()
+    const matplotlibOutputProxy = {
+      toJs: vi.fn(() => [
+        {
+          output_type: 'display_data',
+          data: { 'image/png': 'abc123' },
+          metadata: {},
+        },
+      ]),
+      destroy: vi.fn(),
+    }
+
+    instance.runPythonAsync.mockImplementation(async (source: string) => {
+      if (source === 'import matplotlib.pyplot as plt\nplt.plot([1, 2, 3])\nplt.show()') {
+        return undefined
+      }
+      if (source.includes('__vuepyter_capture_matplotlib__')) {
+        return matplotlibOutputProxy
+      }
+      return undefined
+    })
+
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+    const kernel = usePyodideKernel()
+    await kernel.initialize()
+
+    const result = await kernel.executeCell({
+      source: 'import matplotlib.pyplot as plt\nplt.plot([1, 2, 3])\nplt.show()',
+    })
+
+    const executedSource = String(instance.runPythonAsync.mock.calls.at(-2)?.[0])
+
+    expect(result.outputs).toEqual([
+      {
+        output_type: 'display_data',
+        data: { 'image/png': 'abc123' },
+        metadata: {},
+      },
+    ])
+    expect(matplotlibOutputProxy.toJs).toHaveBeenCalledTimes(1)
+    expect(matplotlibOutputProxy.destroy).toHaveBeenCalledTimes(1)
+    expect(executedSource).toContain('MPLBACKEND')
+    expect(executedSource).toContain('__vuepyter_plt__.show = __vuepyter_matplotlib_show__')
+    expect(executedSource).toContain('plt.show()')
+    expect(String(instance.runPythonAsync.mock.calls.at(-1)?.[0])).toContain(
+      '__vuepyter_capture_matplotlib__',
+    )
+  })
+
   it('queues executions sequentially when multiple runs are requested', async () => {
     const instance = createMockPyodide()
     const first = deferred<unknown>()
@@ -282,6 +431,7 @@ describe('composables/usePyodideKernel', () => {
     vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
     const kernel = usePyodideKernel()
     await kernel.initialize()
+    instance.runPythonAsync.mockClear()
 
     const runFirst = kernel.executeCell({ source: 'first' })
     const runSecond = kernel.executeCell({ source: 'second' })

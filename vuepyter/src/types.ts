@@ -1,9 +1,20 @@
 import type { Extension } from '@codemirror/state'
 import type { ComputedRef, MaybeRefOrGetter, Ref, ShallowRef } from 'vue'
 
+/**
+ * Supported notebook cell kinds.
+ */
 export type CellType = 'code' | 'markdown' | 'raw'
 export type NotebookCellType = CellType
+
+/**
+ * Runtime lifecycle states for the in-browser kernel.
+ */
 export type KernelStatus = 'loading' | 'ready' | 'busy' | 'error'
+
+/**
+ * Workspace synchronization strategy.
+ */
 export type KernelUpdateMode = 'after-execution' | 'always-live'
 export type NotebookMode = 'command' | 'edit'
 export type NotebookMetadata = Record<string, unknown>
@@ -106,6 +117,10 @@ export interface NotebookDocument {
   [key: string]: unknown
 }
 
+/**
+ * Serialized notebook fields match nbformat where multiline content can be
+ * represented as either a single string or an array of lines.
+ */
 export type MultilineField = string | string[]
 
 export interface SerializedStreamOutput extends Omit<StreamOutput, 'text'> {
@@ -142,6 +157,9 @@ export interface SerializedNotebookDocument extends Omit<NotebookDocument, 'cell
   cells: SerializedNotebookCell[]
 }
 
+/**
+ * External model contract accepted by `<Vuepyter v-model>`.
+ */
 export type VuepyterModelValue = NotebookDocument | SerializedNotebookDocument
 
 export interface CodeEditorProps {
@@ -248,12 +266,22 @@ export interface VuepyterLocale {
 }
 
 export type VuepyterTheme = 'light' | 'dark' | ThemeVariables
+export type VuepyterLoadingOverlay = 'auto' | 'always' | 'never'
+export type VuepyterLoadingPhase = 'kernel' | 'external' | 'always'
+
+export interface VuepyterLoadingSlotProps {
+  phase: VuepyterLoadingPhase
+  text: string
+  status: KernelStatus
+  blocking: boolean
+}
 
 export interface VuepyterProps {
   modelValue?: VuepyterModelValue | null
   pyodideUrl?: string
   pyodidePackages?: string[]
   pyodideInitCode?: string
+  preamble?: string
   kernelUpdateMode?: KernelUpdateMode
   readOnly?: boolean
   showEditorBar?: boolean
@@ -265,6 +293,10 @@ export interface VuepyterProps {
   locale?: Partial<VuepyterLocale> | Record<string, string>
   keymap?: Partial<KeymapConfig>
   editorOptions?: Partial<CodeEditorProps>
+  loading?: boolean
+  loadingOverlay?: VuepyterLoadingOverlay
+  loadingText?: string
+  loadingBlockInteraction?: boolean
 }
 
 export interface PyodideGlobalsLike {
@@ -277,14 +309,22 @@ export interface PyodideStdIOOptions {
   raw?: (output: number | string) => void
 }
 
+export interface PyodideImportedModuleLike {
+  install?: (packages: string[]) => Promise<void> | void
+  destroy?: () => void
+}
+
 export interface PyodideInterface {
-  runPythonAsync: any
-  setStdout: any
-  setStderr: any
-  interruptExecution?: any
+  runPythonAsync: (source: string) => Promise<unknown>
+  setStdout: (options: PyodideStdIOOptions) => void
+  setStderr: (options: PyodideStdIOOptions) => void
+  interruptExecution?: () => void
   globals: PyodideGlobalsLike
-  loadPackage?: any
-  pyimport?: (name: string) => { install?: (packages: string[]) => Promise<void>; destroy?: () => void }
+  loadPackage?: (packages: string | string[]) => Promise<unknown> | unknown
+  pyimport?: (name: string) => PyodideImportedModuleLike
+  destroy?: () => void
+  close?: () => void
+  terminate?: () => void
   [key: string]: unknown
 }
 
@@ -339,6 +379,7 @@ export interface UsePyodideKernelOptions {
   pyodideUrl?: string
   pyodidePackages?: string[]
   pyodideInitCode?: string
+  preamble?: string
   getWorkspaceUpdateMode?: () => KernelUpdateMode
   onReady?: (payload: KernelReadyPayload) => void
   onError?: (payload: KernelErrorPayload) => void
@@ -347,6 +388,9 @@ export interface UsePyodideKernelOptions {
   onWorkspaceSync?: (payload: KernelWorkspaceSyncPayload) => void
 }
 
+/**
+ * Shared reactive handles provided by Vuepyter through injection.
+ */
 export interface UseVuepyterProvideOptions {
   pyodide: ShallowRef<PyodideInterface | null> | PyodideInterface | null
   workspace: Ref<WorkspaceState> | WorkspaceState
@@ -390,6 +434,10 @@ export interface UseNotebookModelReturn {
   toNbformatDocument: () => SerializedNotebookDocument
 }
 
+/**
+ * Keyboard command handlers. Most callbacks are optional so host components
+ * can opt into only the behaviors they implement.
+ */
 export interface UseKeyboardOptions {
   keymap?: MaybeRefOrGetter<Partial<KeymapConfig>>
   readOnly?: MaybeRefOrGetter<boolean>

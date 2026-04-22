@@ -11,6 +11,7 @@ import type {
   KernelUpdateMode,
   LoadPyodide,
   PyodideInterface,
+  PyodideStdIOOptions,
   UsePyodideKernelOptions,
   WorkspaceState,
 } from '@/types'
@@ -104,6 +105,9 @@ async function resolveLoadPyodide(pyodideUrl: string): Promise<LoadPyodide> {
   return scriptLoader
 }
 
+/**
+ * Best-effort cleanup for PyProxy-like results.
+ */
 function maybeDestroy(value: unknown): void {
   const proxy = value as PyProxyLike | null
   if (proxy && typeof proxy.destroy === 'function') {
@@ -177,6 +181,10 @@ function isModuleNotFoundError(error: unknown, moduleName: string): boolean {
   return message.includes(`No module named '${moduleName}'`) || message.includes(`No module named "${moduleName}"`)
 }
 
+/**
+ * Supports both runtimes where `micropip` is pre-bundled and ones where it
+ * must be loaded dynamically.
+ */
 async function loadMicropip(pyodide: PyodideInterface): Promise<void> {
   try {
     await pyodide.runPythonAsync('import micropip')
@@ -220,9 +228,342 @@ async function installPyodidePackages(
   await pyodide.runPythonAsync(`await micropip.install(${encodedPackages})`)
 }
 
+const NOTEBOOK_FILE_EXTENSION = /\.ipynb(?:[?#].*)?$/iu
+const PYTHON_FILE_EXTENSION = /\.py(?:[?#].*)?$/iu
+const URL_LIKE_PREAMBLE = /^(https?:)?\/\//iu
+
+function normalizeMultiline(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry ?? '')).join('')
+  }
+  if (typeof value === 'string') {
+    return value
+  }
+  if (value == null) {
+    return ''
+  }
+  return String(value)
+}
+
+function notebookToPreambleSource(input: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    throw new Error('Notebook preamble must contain valid JSON')
+  }
+
+  const notebook =
+    parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+
+  if (!notebook || !Array.isArray(notebook.cells)) {
+    throw new Error('Notebook preamble must include a cells array')
+  }
+
+  const chunks: string[] = []
+  for (const entry of notebook.cells) {
+    const cell =
+      entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>)
+        : null
+    if (!cell || cell.cell_type !== 'code') {
+      continue
+    }
+
+    const source = normalizeMultiline(cell.source)
+    if (source.trim()) {
+      chunks.push(source)
+    }
+  }
+
+  return chunks.join('\n\n')
+}
+
+function shouldFetchPreamble(preamble: string): boolean {
+  if (!preamble || preamble.includes('\n') || preamble.includes('\r')) {
+    return false
+  }
+
+  if (
+    preamble.startsWith('./')
+    || preamble.startsWith('../')
+    || preamble.startsWith('/')
+    || URL_LIKE_PREAMBLE.test(preamble)
+  ) {
+    return true
+  }
+
+  return NOTEBOOK_FILE_EXTENSION.test(preamble) || PYTHON_FILE_EXTENSION.test(preamble)
+}
+
+async function fetchPreambleSource(preamblePath: string): Promise<string> {
+  if (typeof fetch !== 'function') {
+    throw new Error('Preamble file loading requires fetch support in this environment')
+  }
+
+  const response = await fetch(preamblePath, { cache: 'no-store' })
+  if (!response.ok) {
+    throw new Error(`Failed to load preamble from ${preamblePath}: ${response.status}`)
+  }
+
+  return response.text()
+}
+
+/**
+ * Resolves inline preamble code or fetches external `.py` / `.ipynb` sources.
+ */
+async function resolvePreambleSource(preamble: string): Promise<string> {
+  const trimmed = preamble.trim()
+  if (!trimmed) {
+    return ''
+  }
+
+  if (!shouldFetchPreamble(trimmed)) {
+    return preamble
+  }
+
+  const fileContents = await fetchPreambleSource(trimmed)
+  if (NOTEBOOK_FILE_EXTENSION.test(trimmed)) {
+    return notebookToPreambleSource(fileContents)
+  }
+  return fileContents
+}
+
+const MATPLOTLIB_BOOTSTRAP_SOURCE = `
+import os as __vuepyter_os__
+
+__vuepyter_os__.environ.setdefault("MPLBACKEND", "Agg")
+`.trim()
+
+const MATPLOTLIB_EXECUTION_PREFIX = `
+import os as __vuepyter_os__
+
+__vuepyter_os__.environ["MPLBACKEND"] = "Agg"
+
+try:
+    import matplotlib as __vuepyter_matplotlib__
+    __vuepyter_matplotlib__.use("Agg", force=True)
+except Exception:
+    pass
+
+try:
+    import matplotlib.pyplot as __vuepyter_plt__
+    __vuepyter_plt__.switch_backend("Agg")
+    __vuepyter_plt__.close("all")
+
+    def __vuepyter_matplotlib_show__(*args, **kwargs):
+        return None
+
+    __vuepyter_plt__.show = __vuepyter_matplotlib_show__
+except Exception:
+    pass
+`.trim()
+
+const MATPLOTLIB_CAPTURE_SOURCE = `
+def __vuepyter_capture_matplotlib__():
+    try:
+        import base64 as __vuepyter_base64__
+        import io as __vuepyter_io__
+        import matplotlib.pyplot as __vuepyter_plt__
+    except Exception:
+        return []
+
+    __vuepyter_outputs__ = []
+
+    for __vuepyter_figure_number__ in list(__vuepyter_plt__.get_fignums()):
+        __vuepyter_figure__ = __vuepyter_plt__.figure(__vuepyter_figure_number__)
+        __vuepyter_buffer__ = __vuepyter_io__.BytesIO()
+        __vuepyter_figure__.savefig(
+            __vuepyter_buffer__,
+            format="png",
+            facecolor=__vuepyter_figure__.get_facecolor(),
+            edgecolor=__vuepyter_figure__.get_edgecolor(),
+        )
+        __vuepyter_outputs__.append({
+            "output_type": "display_data",
+            "data": {
+                "image/png": __vuepyter_base64__.b64encode(__vuepyter_buffer__.getvalue()).decode("ascii"),
+            },
+            "metadata": {},
+        })
+        __vuepyter_buffer__.close()
+
+    if __vuepyter_outputs__:
+        __vuepyter_plt__.close("all")
+
+    return __vuepyter_outputs__
+
+__vuepyter_capture_matplotlib__()
+`.trim()
+
+const MATPLOTLIB_SOURCE_HINT = /\bmatplotlib\b|\bpyplot\b|\bplt\./i
+const MATPLOTLIB_WORKSPACE_HINT_KEYS = ['plt', 'matplotlib', 'pyplot']
+
 function noop(): void {}
 
+type StdIOCaptureMode = 'unknown' | 'raw' | 'batched'
+
+interface StdIOCapture {
+  raw: (value: number | string) => void
+  batched: (value: string) => void
+  flush: () => void
+}
+
+function createStdIOCapture(
+  append: (chunk: string) => void,
+  onData: () => void,
+): StdIOCapture {
+  let mode: StdIOCaptureMode = 'unknown'
+  let decoder: TextDecoder | null = typeof TextDecoder === 'function' ? new TextDecoder() : null
+
+  const push = (chunk: string): void => {
+    if (!chunk) {
+      return
+    }
+    append(chunk)
+    onData()
+  }
+
+  return {
+    batched: (value: string) => {
+      if (mode === 'raw') {
+        return
+      }
+      mode = 'batched'
+      push(String(value))
+    },
+    raw: (value: number | string) => {
+      if (mode === 'batched') {
+        return
+      }
+      mode = 'raw'
+
+      if (typeof value === 'string') {
+        push(value)
+        return
+      }
+
+      if (!Number.isFinite(value)) {
+        return
+      }
+
+      const byte = Math.trunc(value) & 0xff
+      if (!decoder) {
+        push(String.fromCharCode(byte))
+        return
+      }
+
+      const decoded = decoder.decode(Uint8Array.of(byte), { stream: true })
+      if (decoded) {
+        push(decoded)
+      }
+    },
+    flush: () => {
+      if (mode !== 'raw' || !decoder) {
+        return
+      }
+      const tail = decoder.decode()
+      if (tail) {
+        append(tail)
+      }
+      decoder = new TextDecoder()
+    },
+  }
+}
+
+function setPyodideStreamHandler(
+  setStream: unknown,
+  capture: StdIOCapture,
+): void {
+  if (typeof setStream !== 'function') {
+    return
+  }
+
+  const setter = setStream as (options: PyodideStdIOOptions) => void
+  try {
+    setter({ raw: capture.raw })
+  } catch {
+    setter({ batched: capture.batched })
+  }
+}
+
+function clearPyodideStreamHandler(setStream: unknown): void {
+  if (typeof setStream !== 'function') {
+    return
+  }
+
+  const setter = setStream as (options: PyodideStdIOOptions) => void
+  try {
+    setter({ raw: noop })
+  } catch {
+    setter({ batched: noop })
+  }
+}
+
 const LIVE_WORKSPACE_SYNC_INTERVAL_MS = 48
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+function shouldCaptureMatplotlibOutput(source: string, currentWorkspace: WorkspaceState): boolean {
+  if (MATPLOTLIB_SOURCE_HINT.test(source)) {
+    return true
+  }
+
+  return MATPLOTLIB_WORKSPACE_HINT_KEYS.some((key) => key in currentWorkspace)
+}
+
+function wrapMatplotlibSource(source: string): string {
+  return `${MATPLOTLIB_EXECUTION_PREFIX}\n\n${source}`
+}
+
+function normalizeDisplayOutputs(value: unknown): CellOutput[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const outputs: CellOutput[] = []
+  for (const entry of value) {
+    const raw = asRecord(entry)
+    if (!raw || raw.output_type !== 'display_data') {
+      continue
+    }
+
+    const data = asRecord(raw.data) ?? {}
+    const metadata = asRecord(raw.metadata) ?? {}
+    outputs.push({
+      output_type: 'display_data',
+      data,
+      metadata,
+    })
+  }
+
+  return outputs
+}
+
+async function captureMatplotlibOutputs(
+  pyodide: PyodideInterface,
+  onError?: (payload: KernelErrorPayload) => void,
+): Promise<CellOutput[]> {
+  try {
+    const rawOutputs = await pyodide.runPythonAsync(MATPLOTLIB_CAPTURE_SOURCE)
+    const plainOutputs = toPlainExecutionValue(rawOutputs)
+    maybeDestroy(rawOutputs)
+    return normalizeDisplayOutputs(plainOutputs)
+  } catch (error) {
+    emitError(onError, {
+      type: 'cell:display',
+      message: asError(error).message,
+      detail: error,
+    })
+    return []
+  }
+}
 
 function countLeadingIndent(line: string): number {
   let indent = 0
@@ -244,6 +585,10 @@ function createIndent(length: number): string {
   return ' '.repeat(Math.max(0, length))
 }
 
+/**
+ * Inserts cooperative yield points after top-level `for`/`while` loops to
+ * improve workspace freshness in `always-live` mode.
+ */
 function instrumentAlwaysLiveSource(source: string): string {
   if (!source.trim()) {
     return source
@@ -362,6 +707,10 @@ function normalizeExecuteRequest(
   return requestOrCellId
 }
 
+/**
+ * Manages Pyodide initialization, queued execution, stdout/stderr capture,
+ * and workspace synchronization.
+ */
 export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
   const pyodide = shallowRef<PyodideInterface | null>(null)
   const status = ref<KernelStatus>('loading')
@@ -420,9 +769,16 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         })
 
         await loadMicropip(instance)
+        await instance.runPythonAsync(MATPLOTLIB_BOOTSTRAP_SOURCE)
         await installPyodidePackages(instance, options.pyodidePackages ?? [])
         if (options.pyodideInitCode?.trim()) {
           await instance.runPythonAsync(options.pyodideInitCode)
+        }
+        if (options.preamble?.trim()) {
+          const preambleSource = await resolvePreambleSource(options.preamble)
+          if (preambleSource.trim()) {
+            await instance.runPythonAsync(preambleSource)
+          }
         }
 
         pyodide.value = instance
@@ -456,6 +812,7 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
   }
 
   function enqueueExecution<T>(task: () => Promise<T>): Promise<T> {
+    // Chain through a shared promise to preserve execution order.
     const queued = executionQueue.then(task, task)
     executionQueue = queued.then(noop, noop)
     return queued
@@ -486,13 +843,38 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
       const outputs: CellOutput[] = []
       let stdout = ''
       let stderr = ''
-      const executionSource = liveMode ? instrumentAlwaysLiveSource(request.source) : request.source
+      const needsMatplotlibCapture = shouldCaptureMatplotlibOutput(request.source, workspace.value)
+      const preparedSource = needsMatplotlibCapture ? wrapMatplotlibSource(request.source) : request.source
+      const executionSource = liveMode ? instrumentAlwaysLiveSource(preparedSource) : preparedSource
 
       const maybeSyncWorkspaceLive = (): void => {
         liveSyncRequested = true
       }
 
+      const stdoutCapture = createStdIOCapture(
+        (chunk) => {
+          stdout += chunk
+        },
+        () => {
+          if (liveMode) {
+            maybeSyncWorkspaceLive()
+          }
+        },
+      )
+      const stderrCapture = createStdIOCapture(
+        (chunk) => {
+          stderr += chunk
+        },
+        () => {
+          if (liveMode) {
+            maybeSyncWorkspaceLive()
+          }
+        },
+      )
+
       const pushStreams = (): void => {
+        stdoutCapture.flush()
+        stderrCapture.flush()
         if (stdout) {
           outputs.push({
             output_type: 'stream',
@@ -511,26 +893,8 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         }
       }
 
-      if (typeof instance.setStdout === 'function') {
-        instance.setStdout({
-          batched: (value: string) => {
-            stdout += value
-            if (liveMode) {
-              maybeSyncWorkspaceLive()
-            }
-          },
-        })
-      }
-      if (typeof instance.setStderr === 'function') {
-        instance.setStderr({
-          batched: (value: string) => {
-            stderr += value
-            if (liveMode) {
-              maybeSyncWorkspaceLive()
-            }
-          },
-        })
-      }
+      setPyodideStreamHandler(instance.setStdout.bind(instance), stdoutCapture)
+      setPyodideStreamHandler(instance.setStderr.bind(instance), stderrCapture)
 
       if (liveMode) {
         try {
@@ -567,6 +931,10 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         const result = await instance.runPythonAsync(executionSource)
         const plainResult = toPlainExecutionValue(result)
         pushStreams()
+
+        if (needsMatplotlibCapture) {
+          outputs.push(...(await captureMatplotlibOutputs(instance, options.onError)))
+        }
 
         if (result !== undefined) {
           outputs.push({
@@ -630,12 +998,8 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
             liveSyncTimer = null
           }
         }
-        if (typeof instance.setStdout === 'function') {
-          instance.setStdout({ batched: noop })
-        }
-        if (typeof instance.setStderr === 'function') {
-          instance.setStderr({ batched: noop })
-        }
+        clearPyodideStreamHandler(instance.setStdout.bind(instance))
+        clearPyodideStreamHandler(instance.setStderr.bind(instance))
         syncWorkspace()
         status.value = pyodide.value ? 'ready' : 'error'
       }

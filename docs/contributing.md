@@ -94,7 +94,6 @@ The other examples exercise longer-lived notebook state and interactive executio
 
 - `examples/quickstart/` covers loading, editing, executing, and LaTeX rendering.
 - `examples/game-of-life/` covers iterative notebook state and repeat execution.
-- `examples/nn-visualizer/` covers the blank split-pane starter for custom visualization work.
 - `examples/cart-pole/` covers real-time interaction with notebook-driven logic.
 
 ## Test workflow

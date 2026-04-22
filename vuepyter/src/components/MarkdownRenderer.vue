@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import 'katex/dist/katex.min.css'
-import { renderMarkdown } from '../utils/markdownRender'
+import { renderMarkdownToHtml } from '../utils/markdownRender'
 
 const props = withDefaults(
   defineProps<{
@@ -12,7 +12,7 @@ const props = withDefaults(
   },
 )
 
-const renderedHtml = computed(() => renderMarkdown(props.source))
+const renderedHtml = computed(() => renderMarkdownToHtml(props.source))
 </script>
 
 <template>

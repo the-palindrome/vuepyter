@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { computed, defineComponent, nextTick, ref } from 'vue'
+import { computed, defineComponent, h, nextTick, ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const NOTEBOOK_MODEL_IDS = ['@/composables/useNotebookModel', '../../src/composables/useNotebookModel.ts']
@@ -293,6 +293,15 @@ async function flushAsync(): Promise<void> {
   await nextTick()
 }
 
+const loadingSlot = (slotProps: Record<string, unknown>) =>
+  h('div', {
+    'data-testid': 'loading-slot',
+    'data-phase': String(slotProps.phase ?? ''),
+    'data-text': String(slotProps.text ?? ''),
+    'data-status': String(slotProps.status ?? ''),
+    'data-blocking': String(slotProps.blocking ?? ''),
+  })
+
 describe('components/Vuepyter core interactions', () => {
   it('renders editor bar placement and applies theme variables', async () => {
     const { Vuepyter } = await loadVuepyterWithMocks()
@@ -362,6 +371,102 @@ describe('components/Vuepyter core interactions', () => {
       type: 'kernel:init',
       message: 'failed',
     })
+  })
+
+  it('shows loading overlay in auto mode while kernel is loading and hides once ready', async () => {
+    const { Vuepyter, kernel } = await loadVuepyterWithMocks()
+    kernel.status.value = 'loading'
+
+    const wrapper = mount(Vuepyter as never, {
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flushAsync()
+    const loadingWhileKernelStarts = wrapper.find('[data-testid="loading-slot"]')
+    expect(loadingWhileKernelStarts.exists()).toBe(true)
+    expect(loadingWhileKernelStarts.attributes('data-phase')).toBe('kernel')
+    expect(loadingWhileKernelStarts.attributes('data-status')).toBe('loading')
+
+    kernel.status.value = 'ready'
+    await flushAsync()
+    expect(wrapper.find('[data-testid="loading-slot"]').exists()).toBe(false)
+  })
+
+  it('suppresses auto loading overlay when loadingOverlay is set to never', async () => {
+    const { Vuepyter, kernel } = await loadVuepyterWithMocks()
+    kernel.status.value = 'loading'
+
+    const wrapper = mount(Vuepyter as never, {
+      props: {
+        loadingOverlay: 'never',
+      },
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flushAsync()
+    expect(wrapper.find('[data-testid="loading-slot"]').exists()).toBe(false)
+  })
+
+  it('shows external loading overlay and keeps slot props in sync with config', async () => {
+    const { Vuepyter, kernel } = await loadVuepyterWithMocks()
+    kernel.status.value = 'ready'
+
+    const wrapper = mount(Vuepyter as never, {
+      props: {
+        loading: false,
+        loadingText: 'Starting notebook...',
+      },
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flushAsync()
+    expect(wrapper.find('[data-testid="loading-slot"]').exists()).toBe(false)
+
+    await wrapper.setProps({ loading: true })
+    await flushAsync()
+
+    const loading = wrapper.find('[data-testid="loading-slot"]')
+    expect(loading.exists()).toBe(true)
+    expect(loading.attributes('data-phase')).toBe('external')
+    expect(loading.attributes('data-text')).toBe('Starting notebook...')
+    expect(loading.attributes('data-status')).toBe('ready')
+    expect(loading.attributes('data-blocking')).toBe('true')
+  })
+
+  it('marks loading overlay as pass-through when loadingBlockInteraction is false', async () => {
+    const { Vuepyter } = await loadVuepyterWithMocks()
+
+    const wrapper = mount(Vuepyter as never, {
+      props: {
+        loading: true,
+        loadingBlockInteraction: false,
+      },
+      global: {
+        stubs: { EditorBar: EditorBarStub, Notebook: NotebookStub },
+      },
+      slots: {
+        loading: loadingSlot,
+      },
+    })
+
+    await flushAsync()
+    expect(wrapper.get('[data-testid="loading-slot"]').attributes('data-blocking')).toBe('false')
+    expect(wrapper.get('.vuepyter-loading-overlay').classes()).toContain('is-pass-through')
   })
 
   it('debounces update:modelValue on changes and flushes immediately on save', async () => {

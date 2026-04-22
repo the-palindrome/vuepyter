@@ -1,9 +1,19 @@
 import { expect, test } from '@playwright/test'
-import { cell, expectCellOrder, INITIAL_CELL_IDS, readModel, waitForKernelReady } from './helpers'
+import { cell, expectCellOrder, INITIAL_CELL_IDS, openNotebookPage, readModel, waitForKernelReady } from './helpers'
+
+function normalizeStreamText(value: unknown): string | null {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => String(entry)).join('')
+  }
+  return null
+}
 
 test.describe('vuepyter e2e', () => {
   test('edits code in CodeMirror and executes it with Shift+Enter', async ({ page }) => {
-    await page.goto('/')
+    await openNotebookPage(page)
     await waitForKernelReady(page)
 
     const firstCell = cell(page, 0)
@@ -17,6 +27,18 @@ test.describe('vuepyter e2e', () => {
 
     await page.keyboard.press('Shift+Enter')
     await expect(page.locator('.vuepyter-output-pre')).toContainText('alpha updated')
+    await expect
+      .poll(async () => {
+        const model = await readModel(page)
+        const firstCellOutput = model.cells[0]?.cell_type === 'code'
+          ? model.cells[0].outputs[0]
+          : null
+
+        return firstCellOutput?.output_type === 'stream'
+          ? normalizeStreamText(firstCellOutput.text)
+          : null
+      })
+      .toBe('alpha updated\n')
     await expect(page.locator('.vuepyter-cell.is-active').nth(0)).toContainText('Markdown cell')
 
     const markdownCell = cell(page, 1)
@@ -39,7 +61,7 @@ test.describe('vuepyter e2e', () => {
   })
 
   test('supports command-mode shortcuts for inserting, moving, and deleting cells', async ({ page }) => {
-    await page.goto('/')
+    await openNotebookPage(page)
     await waitForKernelReady(page)
 
     const notebook = page.locator('.vuepyter-notebook')
@@ -67,13 +89,34 @@ test.describe('vuepyter e2e', () => {
   })
 
   test('runs all cells and handles toolbar and menu actions', async ({ page }) => {
-    await page.goto('/')
+    await openNotebookPage(page)
     await waitForKernelReady(page)
 
     await page.getByTestId('toolbar-run-all').click()
     await expect(page.locator('.vuepyter-output-wrap')).toHaveCount(2)
     await expect(page.locator('.vuepyter-output-pre').first()).toContainText('alpha')
     await expect(page.locator('.vuepyter-output-pre').nth(1)).toContainText('42')
+    await expect
+      .poll(async () => {
+        const model = await readModel(page)
+        const firstCodeCell = model.cells[0]
+        const secondCodeCell = model.cells[2]
+        if (firstCodeCell?.cell_type !== 'code' || secondCodeCell?.cell_type !== 'code') {
+          return { stdout: null, executeResult: null }
+        }
+
+        const stdout = firstCodeCell.outputs.find((output) => output.output_type === 'stream' && output.name === 'stdout')
+        const executeResult = secondCodeCell.outputs.find((output) => output.output_type === 'execute_result')
+
+        return {
+          stdout: stdout?.output_type === 'stream' ? normalizeStreamText(stdout.text) : null,
+          executeResult:
+            executeResult?.output_type === 'execute_result'
+              ? executeResult.data['text/plain'] ?? null
+              : null,
+        }
+      })
+      .toEqual({ stdout: 'alpha\n', executeResult: '42' })
 
     await page.getByTestId('menu-run').click()
     await page.getByTestId('menu-item-run-clear').click()

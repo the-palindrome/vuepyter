@@ -73,7 +73,7 @@ function splitMultiline(value: string): string[] {
   return value.match(/[^\n]*\n|[^\n]+$/gu) ?? [value]
 }
 
-function generateCellId(): string {
+function createNotebookCellId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
   }
@@ -186,7 +186,7 @@ function normalizeOutput(value: unknown): CellOutput {
 function normalizeCell(value: unknown): NotebookCell {
   const raw = asRecord(value)
   const cellType = raw.cell_type === 'markdown' || raw.cell_type === 'raw' ? raw.cell_type : 'code'
-  const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id : generateCellId()
+  const id = typeof raw.id === 'string' && raw.id.trim() ? raw.id : createNotebookCellId()
   const source = normalizeMultiline(raw.source)
   const metadata = normalizeMetadata(raw.metadata)
   const extras = stripKnownKeys(raw, CELL_ROOT_KEYS)
@@ -225,11 +225,30 @@ function normalizeCell(value: unknown): NotebookCell {
   return codeCell
 }
 
+export function cloneNotebookCell(
+  cell: NotebookCell,
+  options: { preserveId?: boolean; resetCodeExecutionState?: boolean } = {},
+): NotebookCell {
+  const { preserveId = true, resetCodeExecutionState = false } = options
+  const cloned = normalizeCell(cell)
+
+  if (!preserveId) {
+    cloned.id = createNotebookCellId()
+  }
+
+  if (resetCodeExecutionState && cloned.cell_type === 'code') {
+    cloned.execution_count = null
+    cloned.outputs = []
+  }
+
+  return cloned
+}
+
 export function createNotebookCell(
   cellType: NotebookCellType = 'code',
   overrides: Partial<NotebookCell> = {},
 ): NotebookCell {
-  const id = typeof overrides.id === 'string' && overrides.id.trim() ? overrides.id : generateCellId()
+  const id = typeof overrides.id === 'string' && overrides.id.trim() ? overrides.id : createNotebookCellId()
   const metadata = normalizeMetadata(overrides.metadata)
   const source = typeof overrides.source === 'string' ? overrides.source : ''
   const extra = stripKnownKeys(asRecord(overrides), CELL_ROOT_KEYS)
@@ -357,7 +376,7 @@ function serializeCell(cell: NotebookCell): Record<string, unknown> {
   const raw = asRecord(cell)
   const common = {
     ...stripKnownKeys(raw, CELL_ROOT_KEYS),
-    id: typeof raw.id === 'string' ? raw.id : generateCellId(),
+    id: typeof raw.id === 'string' ? raw.id : createNotebookCellId(),
     cell_type: raw.cell_type,
     source: splitMultiline(normalizeMultiline(raw.source)),
     metadata: deepClone(normalizeMetadata(raw.metadata)),

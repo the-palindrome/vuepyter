@@ -178,6 +178,7 @@ const statusText = computed(() => {
 const statusClass = computed(() => `is-${props.status ?? 'loading'}`)
 const trustedLabel = computed(() => (trusted.value ? 'Trusted' : 'Not Trusted'))
 
+// Centralized menu model keeps toolbar buttons and dropdown actions in sync.
 const menuDefinitions = computed<MenuDefinition[]>(() => [
   {
     id: 'file',

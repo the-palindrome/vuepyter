@@ -169,6 +169,11 @@
             ? JSON.stringify(notebook.value, null, 2)
             : 'Loading quickstart notebook...',
         )
+        const loadingText = computed(() =>
+          notebookLoaded.value
+            ? 'Starting Python kernel...'
+            : 'Loading quickstart notebook...',
+        )
 
         const editorTheme = {
           '--vuepyter-bg': '#ffffff',
@@ -251,7 +256,9 @@
 
         return {
           notebook,
+          notebookLoaded,
           notebookJson,
+          loadingText,
           editorTheme,
           pageStyle,
           startResize,
@@ -281,6 +288,9 @@
               <Vuepyter
                 class="editor-fill"
                 v-model="notebook"
+                :loading="!notebookLoaded"
+                :loading-text="loadingText"
+                preamble="./preamble.py"
                 :autosave-interval="1000"
                 :theme="editorTheme"
               />

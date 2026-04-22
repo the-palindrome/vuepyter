@@ -1,7 +1,5 @@
 import type {
-  CodeEditorProps,
   KeymapConfig,
-  KernelStatus,
   NotebookCellType,
   ThemeVariables,
   VuepyterLocale,
@@ -13,8 +11,6 @@ export const DEFAULT_NBFORMAT_MINOR = 5
 export const DEFAULT_PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.27.3/full/pyodide.mjs'
 
 export const DEFAULT_CELL_TYPES: NotebookCellType[] = ['code', 'markdown', 'raw']
-
-export const DEFAULT_KERNEL_STATUS: KernelStatus = 'loading'
 
 export const DEFAULT_KEYMAP: KeymapConfig = {
   runCellAndAdvance: 'Shift+Enter',
@@ -105,14 +101,6 @@ export const DEFAULT_LOCALE: VuepyterLocale = {
   cellTypeRaw: 'Raw',
 }
 
-export const DEFAULT_EDITOR_OPTIONS: Partial<CodeEditorProps> = {
-  lineNumbers: true,
-  lineWrapping: true,
-  indentUnit: 4,
-  tabSize: 4,
-  extensions: [],
-}
-
 export const LIGHT_THEME: ThemeVariables = {
   '--vuepyter-bg': '#f8fafc',
   '--vuepyter-cell-bg': '#ffffff',
@@ -172,11 +160,3 @@ export const DARK_THEME: ThemeVariables = {
   '--vuepyter-syntax-operator': '#fb7185',
   '--vuepyter-content-max-width': '1040px',
 }
-
-export const THEME_PRESETS = {
-  light: LIGHT_THEME,
-  dark: DARK_THEME,
-} as const
-
-export const LIGHT_THEME_VARIABLES = LIGHT_THEME
-export const DARK_THEME_VARIABLES = DARK_THEME

@@ -1,67 +1,46 @@
 # Vuepyter
 
-Vuepyter is a lightweight Jupyter Notebook editor for Vue 3. It renders notebook cells, keeps notebook state in sync with `v-model`, and runs Python in the browser through Pyodide.
-
-## Documentation
-
-The repository includes a full documentation suite for Vuepyter:
-
-- Getting started: https://github.com/the-palindrome/vuepyter/blob/main/docs/getting-started.md
-- Tutorial: https://github.com/the-palindrome/vuepyter/blob/main/docs/tutorial-build-a-notebook-app.md
-- API reference: https://github.com/the-palindrome/vuepyter/blob/main/docs/api-reference.md
-- Architecture: https://github.com/the-palindrome/vuepyter/blob/main/docs/architecture.md
-- Examples guide: https://github.com/the-palindrome/vuepyter/blob/main/docs/examples.md
-- Troubleshooting: https://github.com/the-palindrome/vuepyter/blob/main/docs/troubleshooting.md
+Vuepyter is a Vue 3 notebook editor with in-browser Python execution powered by Pyodide.  
+It supports code/markdown/raw cells, notebook-level editing workflows, and `v-model` synchronization with nbformat-compatible data.
 
 ## Install
-
-Install Vuepyter alongside Vue:
 
 ```bash
 npm install vuepyter vue
 ```
 
-## Import styles
-
-Vuepyter ships with its own stylesheet. Import it once in your app entry before you render the component:
+Import styles once in your app:
 
 ```ts
 import 'vuepyter/style.css'
 ```
 
-## Use the component
-
-Import the component directly when you want local registration in a single view:
+## Quick Start
 
 ```vue
 <script setup lang="ts">
 import { ref } from 'vue'
-import { Vuepyter } from 'vuepyter'
+import { Vuepyter, type SerializedNotebookDocument } from 'vuepyter'
 import 'vuepyter/style.css'
 
-const notebook = ref({
+const notebook = ref<SerializedNotebookDocument>({
   nbformat: 4,
   nbformat_minor: 5,
-  metadata: {
-    kernelspec: {
-      name: 'python3',
-      display_name: 'Python 3',
-    },
-  },
+  metadata: { title: 'My Notebook', trusted: true },
   cells: [
     {
-      id: 'welcome',
+      id: 'intro',
       cell_type: 'markdown',
-      metadata: {},
       source: '# Hello from Vuepyter',
+      metadata: {},
     },
     {
-      id: 'run-me',
+      id: 'code-1',
       cell_type: 'code',
+      source: 'print("hello")',
       metadata: {},
       execution_count: null,
       outputs: [],
-      source: 'print("Hello from the notebook")',
     },
   ],
 })
@@ -72,56 +51,92 @@ const notebook = ref({
 </template>
 ```
 
-`v-model` accepts either a notebook document or a serialized notebook document. Vuepyter normalizes the data internally, so you can start with a minimal notebook and let the component fill in the rest.
+## Model Shapes
 
-Vuepyter emits serialized notebook documents from `update:modelValue`. If you want your bound state shape to stay stable in TypeScript, initialize the notebook as a serialized document from the start.
+`v-model` accepts:
+- `NotebookDocument` (in-memory shape, `source` as `string`)
+- `SerializedNotebookDocument` (nbformat-friendly shape, `source` and some output fields as `string | string[]`)
 
-## Register as a plugin
+`update:modelValue` emits a `SerializedNotebookDocument`.
 
-Vuepyter also exposes a default plugin export that registers the component globally. This is useful when you want to install it once on the app instance:
+## Component API (`<Vuepyter />`)
+
+### Key Props
+
+| Prop | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `modelValue` | `VuepyterModelValue \| null` | `null` | Notebook bound with `v-model`. |
+| `pyodideUrl` | `string` | bundled CDN URL | Override Pyodide entry URL only when needed. |
+| `pyodidePackages` | `string[]` | `[]` | Installed before notebook execution. |
+| `pyodideInitCode` | `string` | `''` | Runs once after kernel initialization. |
+| `preamble` | `string` | `''` | Inline code or `.py`/`.ipynb` path/URL loaded at startup. |
+| `kernelUpdateMode` | `'after-execution' \| 'always-live'` | `'after-execution'` | `always-live` is experimental. |
+| `readOnly` | `boolean` | `false` | Disables editing actions. |
+| `showEditorBar` | `boolean` | `true` | Shows top/bottom toolbar. |
+| `editorBarPosition` | `'top' \| 'bottom'` | `'top'` | Toolbar placement. |
+| `theme` | `'light' \| 'dark' \| Record<string,string>` | `'light'` | Built-in or CSS-variable override theme. |
+| `cellTypes` | `CellType[]` | `['code','markdown','raw']` | Allowed created/converted cell types. |
+| `maxOutputHeight` | `number` | `400` | Max output panel height per cell. |
+| `autosaveInterval` | `number \| false` | `false` | If `false`, emits are debounced; if number, periodic flush. |
+| `locale` | `Record<string,string>` | `{}` | Text override dictionary. |
+| `keymap` | `Partial<KeymapConfig>` | `{}` | Shortcut overrides. |
+| `editorOptions` | `Partial<CodeEditorProps>` | `{}` | CodeMirror options override. |
+| `loading` | `boolean` | `false` | External loading state. |
+| `loadingOverlay` | `'auto' \| 'always' \| 'never'` | `'auto'` | Overlay display policy. |
+| `loadingText` | `string` | `'Loading notebook...'` | Overlay label. |
+| `loadingBlockInteraction` | `boolean` | `true` | Whether overlay captures pointer events. |
+
+### Events
+
+- `update:modelValue` -> serialized notebook snapshot
+- `ready` -> `{ pyodide, workspace }`
+- `cell:execute` -> `{ cellId, source }`
+- `cell:complete` -> `{ cellId, outputs, error? }`
+- `workspace:sync` -> `{ workspace, mode }`
+- `kernel:update-mode` -> `{ mode }`
+- `shortcuts:help`
+- `error` -> `{ type, message, detail? }`
+
+### Slots
+
+- `loading` -> custom overlay UI (`{ phase, text, status, blocking }`)
+- `editor` -> custom per-cell editor content passthrough
+- `markdown-renderer` -> custom markdown rendering passthrough
+- `bar-prepend`, `bar-left`, `bar-center`, `bar-right`, `bar-append` -> toolbar extension slots
+
+### Exposed Methods (`ref` on Vuepyter)
+
+- `executeAllCells(): Promise<void>`
+- `setKernelUpdateMode(mode: 'after-execution' | 'always-live'): void`
+- `getKernelUpdateMode(): 'after-execution' | 'always-live'`
+
+## Exported Utilities
 
 ```ts
-import { createApp } from 'vue'
-import App from './App.vue'
-import Vuepyter from 'vuepyter'
-import 'vuepyter/style.css'
-
-createApp(App).use(Vuepyter).mount('#app')
+import VuepyterPlugin, {
+  Vuepyter,
+  CodeEditor,
+  usePyodideKernel,
+  useNotebookModel,
+  useKeyboard,
+  useVuepyterPyodide,
+  useVuepyterWorkspace,
+  useVuepyterStatus,
+} from 'vuepyter'
 ```
 
-Use the named export if you prefer local registration:
+- Default export is a Vue plugin registering `<Vuepyter />`.
+- Named exports include component + composables + injection helpers.
 
-```ts
-import { Vuepyter } from 'vuepyter'
-```
+## Pyodide, Browser, and SSR Notes
 
-## Pyodide notes
+- Vuepyter executes Python in the browser; it should be mounted client-side in SSR apps.
+- `preamble` accepts inline code or a fetchable path/URL to `.py` or `.ipynb`.
+- `kernelUpdateMode="always-live"` instruments top-level loops for more frequent workspace sync; it is not full streaming execution.
 
-Vuepyter executes notebooks in the browser with Pyodide. That means the editor needs a browser environment and should be mounted client-side in SSR apps.
+## Theming
 
-Common runtime props:
-
-```vue
-<Vuepyter
-  v-model="notebook"
-  :pyodide-packages="['numpy', 'pandas']"
-  pyodide-init-code="import math"
-/>
-```
-
-Vuepyter uses its bundled Pyodide runtime by default. Override `pyodideUrl` only if you need a mirror or a different version. `pyodidePackages` installs extra packages before execution, and `pyodideInitCode` runs once after the runtime loads. `kernelUpdateMode` controls whether workspace state updates after a cell runs or attempts additional syncs while a long-running cell is still executing.
-
-`kernelUpdateMode="always-live"` is experimental. It improves workspace syncing during top-level loops, but it is not a full streaming execution mode.
-
-## Styling and themes
-
-The stylesheet covers the editor chrome, cell layout, and notebook shell. You can use the built-in `light` and `dark` themes, or pass a theme object to override CSS variables for your own design system.
-
-```vue
-<Vuepyter v-model="notebook" theme="dark" />
-```
-
-For a custom palette, pass the variables directly:
+Use `theme="light"` / `theme="dark"` or pass CSS variables:
 
 ```vue
 <Vuepyter
@@ -129,30 +144,11 @@ For a custom palette, pass the variables directly:
   :theme="{
     '--vuepyter-bg': '#0f172a',
     '--vuepyter-cell-bg': '#111827',
+    '--vuepyter-content-max-width': '1200px',
   }"
 />
 ```
 
-For a full custom look, start with the default stylesheet and override the variables in a parent scope rather than replacing the component styles wholesale.
-
-## Package contents
-
-The published package includes the compiled module entry points, TypeScript declarations, and the bundled stylesheet:
-
-- `dist/index.mjs`
-- `dist/index.cjs`
-- `dist/index.d.ts`
-- `dist/index.d.cts`
-- `dist/vuepyter.css`
-
-## Examples
-
-See [examples/README.md](../examples/README.md) for the standalone demo pages and the npm-consumer path.
-
-## Compatibility
-
-Vuepyter targets Vue 3.4+ and modern browsers with browser-side execution. Because Pyodide loads in the client, it works best in apps that can defer notebook rendering until after mount.
-
 ## License
 
-Vuepyter is released under the MIT License.
+MIT

@@ -2,6 +2,9 @@ import { inject, isRef, provide, ref, shallowRef } from 'vue'
 import type { InjectionKey, Ref, ShallowRef } from 'vue'
 import type { KernelStatus, PyodideInterface, UseVuepyterProvideOptions, WorkspaceState } from '@/types'
 
+/**
+ * Injection keys used by nested Vuepyter-aware components/composables.
+ */
 export const VUEPYTER_PYODIDE: InjectionKey<ShallowRef<PyodideInterface | null>> = Symbol(
   'VUEPYTER_PYODIDE',
 )
@@ -16,6 +19,10 @@ function injectOrThrow<T>(key: InjectionKey<T>, name: string): T {
   return value
 }
 
+/**
+ * Normalizes plain values and refs, then provides a shared reactive kernel
+ * context to descendant components.
+ */
 export function useVuepyterProvide(options: UseVuepyterProvideOptions): void {
   const pyodideRef = isRef(options.pyodide)
     ? options.pyodide
@@ -28,18 +35,30 @@ export function useVuepyterProvide(options: UseVuepyterProvideOptions): void {
   provide(VUEPYTER_STATUS, statusRef)
 }
 
+/**
+ * Injects the current pyodide instance ref from Vuepyter context.
+ */
 export function useVuepyterPyodide(): ShallowRef<PyodideInterface | null> {
   return injectOrThrow(VUEPYTER_PYODIDE, 'useVuepyterPyodide')
 }
 
+/**
+ * Injects the reactive workspace snapshot.
+ */
 export function useVuepyterWorkspace(): Ref<WorkspaceState> {
   return injectOrThrow(VUEPYTER_WORKSPACE, 'useVuepyterWorkspace')
 }
 
+/**
+ * Injects the reactive kernel status (`loading`/`ready`/`busy`/`error`).
+ */
 export function useVuepyterStatus(): Ref<KernelStatus> {
   return injectOrThrow(VUEPYTER_STATUS, 'useVuepyterStatus')
 }
 
+/**
+ * Utility factory used by tests and embedding scenarios.
+ */
 export function createVuepyterProvideDefaults(): UseVuepyterProvideOptions {
   return {
     pyodide: shallowRef<PyodideInterface | null>(null),
@@ -47,5 +66,3 @@ export function createVuepyterProvideDefaults(): UseVuepyterProvideOptions {
     status: ref<KernelStatus>('loading'),
   }
 }
-
-export const provideVuepyterContext = useVuepyterProvide

@@ -29,6 +29,11 @@ The default plugin registers only `Vuepyter`. Import `CodeEditor` as a named exp
 | `pyodideUrl` | `string` | bundled CDN URL | Overrides the Pyodide runtime source. Use this for self-hosted or mirrored runtimes. |
 | `pyodidePackages` | `string[]` | `[]` | Installs extra packages through `micropip` during kernel initialization. |
 | `pyodideInitCode` | `string` | `''` | Runs once after Pyodide loads and before notebook execution starts. |
+| `preamble` | `string` | `''` | Runs once during startup before the component becomes ready. Accepts inline Python code or a `.py`/`.ipynb` path or URL. |
+| `loading` | `boolean` | `false` | App-controlled loading state. Combine this with `v-model` notebook fetch state when loading notebook JSON outside the component. |
+| `loadingOverlay` | `'auto' \| 'always' \| 'never'` | `'auto'` | Controls when the built-in loading overlay appears. In `auto` mode, Vuepyter uses internal kernel loading state and external `loading`. |
+| `loadingText` | `string` | `'Loading notebook...'` | Optional default text for the built-in loading overlay. |
+| `loadingBlockInteraction` | `boolean` | `true` | When `true`, the overlay blocks pointer interaction while visible. |
 | `kernelUpdateMode` | `'after-execution' \| 'always-live'` | `'after-execution'` | Controls when Vuepyter syncs the Python workspace back into Vue. `always-live` is experimental. |
 | `readOnly` | `boolean` | `false` | Disables mutating cell operations and editor writes. |
 | `showEditorBar` | `boolean` | `true` | Shows or hides the notebook toolbar and menus. |
@@ -46,6 +51,8 @@ The default plugin registers only `Vuepyter`. Import `CodeEditor` as a named exp
 `Vuepyter` accepts both normalized and serialized notebook values. The component emits `update:modelValue` with a serialized notebook document, which means multiline `source` and `text` fields are arrays in emitted values.
 
 Unknown notebook, cell, and output keys are preserved during normalization and serialization. This helps Vuepyter round-trip metadata and custom fields without stripping them out.
+
+Notebook loading is usually app-controlled because you decide when to fetch and assign the `v-model` document. For that flow, pass your fetch state to `loading`. Kernel startup loading is internal and is handled automatically in `loadingOverlay="auto"` mode.
 
 ### Events
 
@@ -89,6 +96,17 @@ Use these slots to add custom controls or metadata without replacing the built-i
 
 - `cell`
 - `source`
+
+#### Loading Slot
+
+`loading` overrides the built-in loading overlay UI. It receives these slot props:
+
+- `phase` (for example, `kernel` or `external`)
+- `text`
+- `status`
+- `blocking`
+
+Use this slot when you want a custom spinner/overlay while keeping Vuepyter's loading state logic.
 
 ### Exposed Methods
 
@@ -241,6 +259,7 @@ Unknown output types are normalized into `display_data` with fallback `text/plai
 - `pyodideUrl`
 - `pyodidePackages`
 - `pyodideInitCode`
+- `preamble`
 - `getWorkspaceUpdateMode`
 - `onReady`
 - `onError`
@@ -272,7 +291,7 @@ Unknown output types are normalized into `display_data` with fallback `text/plai
 
 ### Notes
 
-- Initialization always preloads `micropip`, then installs `pyodidePackages`, then runs `pyodideInitCode`.
+- Initialization always preloads `micropip`, then installs `pyodidePackages`, runs `pyodideInitCode`, and finally runs `preamble` when configured.
 - Execution is serialized internally, so concurrent `executeCell()` calls run one after another.
 - `always-live` mode syncs workspace state during execution, but it is a best-effort mode intended for top-level `for` and `while` loops rather than full streaming output.
 

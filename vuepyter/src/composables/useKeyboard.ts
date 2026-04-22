@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, onMounted, ref, toValue } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toValue, watch } from 'vue'
 import { DEFAULT_KEYMAP } from '@/constants'
 import type {
   KeymapConfig,
@@ -12,6 +12,10 @@ interface SequenceState {
   stamp: number
 }
 
+/**
+ * Normalizes shortcut descriptors to a canonical format so user overrides and
+ * default keymap entries are matched consistently.
+ */
 function normalizeShortcut(value: string): string {
   return value
     .trim()
@@ -65,7 +69,7 @@ function eventToShortcut(event: KeyboardEvent): string {
     parts.push('shift')
   }
 
-  const rawKey = event.key.length === 1 ? event.key.toLowerCase() : event.key.toLowerCase()
+  const rawKey = event.key.toLowerCase()
   const key = rawKey === ' ' ? 'space' : rawKey
   parts.push(key)
   return parts.join('+')
@@ -91,6 +95,9 @@ function keyMatchesAny(event: KeyboardEvent, shortcuts: Array<string | undefined
   return shortcuts.some((shortcut) => typeof shortcut === 'string' && shortcut.trim() && keyMatches(event, shortcut))
 }
 
+/**
+ * Global keyboard controller for notebook command mode/edit mode behavior.
+ */
 export function useKeyboard(options: UseKeyboardOptions = {}): UseKeyboardReturn {
   const mode = options.mode ?? ref<NotebookMode>('command')
   const resolvedKeymap = computed<KeymapConfig>(() => ({
@@ -175,6 +182,9 @@ export function useKeyboard(options: UseKeyboardOptions = {}): UseKeyboardReturn
     return true
   }
 
+  /**
+   * Commands that should work regardless of notebook mode (for example save).
+   */
   function handleGlobalShortcuts(event: KeyboardEvent): boolean {
     if (keyMatches(event, resolvedKeymap.value.save)) {
       event.preventDefault()
@@ -184,30 +194,63 @@ export function useKeyboard(options: UseKeyboardOptions = {}): UseKeyboardReturn
     return false
   }
 
+  function handleRunCellAndAdvanceShortcut(
+    event: KeyboardEvent,
+    keymap: KeymapConfig,
+  ): boolean {
+    if (!keyMatchesAny(event, [keymap.runCellAndAdvance])) {
+      return false
+    }
+
+    event.preventDefault()
+    options.onRunCell?.(true)
+    options.onRunCellAndAdvance?.()
+    return true
+  }
+
+  function handleRunCellStayShortcut(
+    event: KeyboardEvent,
+    keymap: KeymapConfig,
+  ): boolean {
+    if (!keyMatchesAny(event, [keymap.runCellStay ?? keymap.runCellAndStay])) {
+      return false
+    }
+
+    event.preventDefault()
+    options.onRunCell?.(false)
+    options.onRunCellStay?.()
+    return true
+  }
+
+  function handleRunCellAndInsertBelowShortcut(
+    event: KeyboardEvent,
+    keymap: KeymapConfig,
+  ): boolean {
+    if (!keyMatchesAny(event, [keymap.runCellAndInsertBelow])) {
+      return false
+    }
+
+    event.preventDefault()
+    if (options.onRunCellAndInsertBelow) {
+      options.onRunCellAndInsertBelow()
+    } else {
+      options.onRunCell?.(true)
+    }
+    return true
+  }
+
   function handleEditMode(event: KeyboardEvent): boolean {
     const keymap = resolvedKeymap.value
 
-    if (keyMatchesAny(event, [keymap.runCellAndAdvance])) {
-      event.preventDefault()
-      options.onRunCell?.(true)
-      options.onRunCellAndAdvance?.()
+    if (handleRunCellAndAdvanceShortcut(event, keymap)) {
       return true
     }
 
-    if (keyMatchesAny(event, [keymap.runCellStay ?? keymap.runCellAndStay])) {
-      event.preventDefault()
-      options.onRunCell?.(false)
-      options.onRunCellStay?.()
+    if (handleRunCellStayShortcut(event, keymap)) {
       return true
     }
 
-    if (keyMatchesAny(event, [keymap.runCellAndInsertBelow])) {
-      event.preventDefault()
-      if (options.onRunCellAndInsertBelow) {
-        options.onRunCellAndInsertBelow()
-      } else {
-        options.onRunCell?.(true)
-      }
+    if (handleRunCellAndInsertBelowShortcut(event, keymap)) {
       return true
     }
 
@@ -250,6 +293,9 @@ export function useKeyboard(options: UseKeyboardOptions = {}): UseKeyboardReturn
     return false
   }
 
+  /**
+   * Command mode is notebook-level navigation/edit orchestration.
+   */
   function handleCommandMode(event: KeyboardEvent): boolean {
     const keymap = resolvedKeymap.value
 
@@ -271,27 +317,15 @@ export function useKeyboard(options: UseKeyboardOptions = {}): UseKeyboardReturn
       return true
     }
 
-    if (keyMatchesAny(event, [keymap.runCellAndAdvance])) {
-      event.preventDefault()
-      options.onRunCell?.(true)
-      options.onRunCellAndAdvance?.()
+    if (handleRunCellAndAdvanceShortcut(event, keymap)) {
       return true
     }
 
-    if (keyMatchesAny(event, [keymap.runCellStay ?? keymap.runCellAndStay])) {
-      event.preventDefault()
-      options.onRunCell?.(false)
-      options.onRunCellStay?.()
+    if (handleRunCellStayShortcut(event, keymap)) {
       return true
     }
 
-    if (keyMatchesAny(event, [keymap.runCellAndInsertBelow])) {
-      event.preventDefault()
-      if (options.onRunCellAndInsertBelow) {
-        options.onRunCellAndInsertBelow()
-      } else {
-        options.onRunCell?.(true)
-      }
+    if (handleRunCellAndInsertBelowShortcut(event, keymap)) {
       return true
     }
 
@@ -659,14 +693,34 @@ export function useKeyboard(options: UseKeyboardOptions = {}): UseKeyboardReturn
     return (target ?? null) as EventTarget | null
   }
 
+  const keydownListener = handleKeydown as EventListener
+  let activeTarget: EventTarget | null = null
+  let stopTargetWatch: (() => void) | null = null
+
+  function syncEventTarget(target = getEventTarget()): void {
+    if (target === activeTarget) {
+      return
+    }
+
+    activeTarget?.removeEventListener('keydown', keydownListener)
+    target?.addEventListener('keydown', keydownListener)
+    activeTarget = target
+  }
+
   onMounted(() => {
-    const target = getEventTarget()
-    target?.addEventListener('keydown', handleKeydown as EventListener)
+    stopTargetWatch = watch(
+      () => toValue(options.target),
+      () => {
+        syncEventTarget()
+      },
+      { immediate: true },
+    )
   })
 
   onBeforeUnmount(() => {
-    const target = getEventTarget()
-    target?.removeEventListener('keydown', handleKeydown as EventListener)
+    stopTargetWatch?.()
+    stopTargetWatch = null
+    syncEventTarget(null)
   })
 
   return {
