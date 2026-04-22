@@ -1,5 +1,6 @@
 type BatchedSink = {
   batched?: (value: string) => void
+  raw?: (value: number | string) => void
 }
 
 class StubGlobals {
@@ -147,6 +148,28 @@ class StubPyodide {
     this.stderr = stream
   }
 
+  private emitStdout(text: string): void {
+    if (typeof this.stdout?.raw === 'function') {
+      const bytes = new TextEncoder().encode(text)
+      for (const byte of bytes) {
+        this.stdout.raw(byte)
+      }
+      return
+    }
+    this.stdout?.batched?.(text)
+  }
+
+  private emitStderr(text: string): void {
+    if (typeof this.stderr?.raw === 'function') {
+      const bytes = new TextEncoder().encode(text)
+      for (const byte of bytes) {
+        this.stderr.raw(byte)
+      }
+      return
+    }
+    this.stderr?.batched?.(text)
+  }
+
   async runPythonAsync(source: string): Promise<unknown> {
     const lines = source.split('\n')
     let lastResult: unknown = undefined
@@ -176,7 +199,7 @@ class StubPyodide {
       const printMatch = line.match(/^print\((.*)\)$/u)
       if (printMatch) {
         const value = evaluateExpression(printMatch[1] ?? '', this.globals)
-        this.stdout?.batched?.(`${String(value)}\n`)
+        this.emitStdout(`${String(value)}\n`)
         continue
       }
 

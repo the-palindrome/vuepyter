@@ -105,6 +105,9 @@ async function resolveLoadPyodide(pyodideUrl: string): Promise<LoadPyodide> {
   return scriptLoader
 }
 
+/**
+ * Best-effort cleanup for PyProxy-like results.
+ */
 function maybeDestroy(value: unknown): void {
   const proxy = value as PyProxyLike | null
   if (proxy && typeof proxy.destroy === 'function') {
@@ -178,6 +181,10 @@ function isModuleNotFoundError(error: unknown, moduleName: string): boolean {
   return message.includes(`No module named '${moduleName}'`) || message.includes(`No module named "${moduleName}"`)
 }
 
+/**
+ * Supports both runtimes where `micropip` is pre-bundled and ones where it
+ * must be loaded dynamically.
+ */
 async function loadMicropip(pyodide: PyodideInterface): Promise<void> {
   try {
     await pyodide.runPythonAsync('import micropip')
@@ -304,6 +311,9 @@ async function fetchPreambleSource(preamblePath: string): Promise<string> {
   return response.text()
 }
 
+/**
+ * Resolves inline preamble code or fetches external `.py` / `.ipynb` sources.
+ */
 async function resolvePreambleSource(preamble: string): Promise<string> {
   const trimmed = preamble.trim()
   if (!trimmed) {
@@ -575,6 +585,10 @@ function createIndent(length: number): string {
   return ' '.repeat(Math.max(0, length))
 }
 
+/**
+ * Inserts cooperative yield points after top-level `for`/`while` loops to
+ * improve workspace freshness in `always-live` mode.
+ */
 function instrumentAlwaysLiveSource(source: string): string {
   if (!source.trim()) {
     return source
@@ -693,6 +707,10 @@ function normalizeExecuteRequest(
   return requestOrCellId
 }
 
+/**
+ * Manages Pyodide initialization, queued execution, stdout/stderr capture,
+ * and workspace synchronization.
+ */
 export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
   const pyodide = shallowRef<PyodideInterface | null>(null)
   const status = ref<KernelStatus>('loading')
@@ -794,6 +812,7 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
   }
 
   function enqueueExecution<T>(task: () => Promise<T>): Promise<T> {
+    // Chain through a shared promise to preserve execution order.
     const queued = executionQueue.then(task, task)
     executionQueue = queued.then(noop, noop)
     return queued
@@ -874,8 +893,8 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
         }
       }
 
-      setPyodideStreamHandler(instance.setStdout, stdoutCapture)
-      setPyodideStreamHandler(instance.setStderr, stderrCapture)
+      setPyodideStreamHandler(instance.setStdout.bind(instance), stdoutCapture)
+      setPyodideStreamHandler(instance.setStderr.bind(instance), stderrCapture)
 
       if (liveMode) {
         try {
@@ -979,8 +998,8 @@ export function usePyodideKernel(options: UsePyodideKernelOptions = {}) {
             liveSyncTimer = null
           }
         }
-        clearPyodideStreamHandler(instance.setStdout)
-        clearPyodideStreamHandler(instance.setStderr)
+        clearPyodideStreamHandler(instance.setStdout.bind(instance))
+        clearPyodideStreamHandler(instance.setStderr.bind(instance))
         syncWorkspace()
         status.value = pyodide.value ? 'ready' : 'error'
       }

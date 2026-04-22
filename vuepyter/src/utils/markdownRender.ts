@@ -329,5 +329,3 @@ export function renderMarkdownToHtml(source: string, options: MarkdownRenderOpti
 
   return sanitizeHtml(html)
 }
-
-export const renderMarkdown = renderMarkdownToHtml

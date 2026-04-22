@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, useSlots, watch } from 'vue'
 import type { CellType, CodeEditorProps, KeymapConfig, NotebookCell, NotebookCellType } from '../types'
 import { useKeyboard } from '../composables/useKeyboard'
+import { cloneNotebookCell, createNotebookCell } from '../utils/nbformat'
 import Cell from './Cell.vue'
 
 interface CellRef {
@@ -78,6 +79,7 @@ watch(
     }
 
     const cellIds = new Set(cells.map((cell) => cell.id))
+    // Persisted UI state is keyed by cell id; compact stores whenever cells change.
     const compact = (store: Record<string, boolean>) =>
       Object.fromEntries(Object.entries(store).filter(([id]) => cellIds.has(id)))
 
@@ -114,32 +116,18 @@ watch(activeIndex, (value) => {
   emit('update:activeIndex', value)
 })
 
-function generateCellId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `cell-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function cloneCell(cell: NotebookCell, preserveId = true): NotebookCell {
-  const cloned = JSON.parse(JSON.stringify(cell)) as NotebookCell
-  if (!preserveId) {
-    cloned.id = generateCellId()
-  }
-  return cloned
-}
-
 function cellForSplit(template: NotebookCell, source: string): NotebookCell {
   if (template.cell_type === 'code') {
     return {
-      ...cloneCell(template, false),
+      ...cloneNotebookCell(template, {
+        preserveId: false,
+        resetCodeExecutionState: true,
+      }),
       source,
-      execution_count: null,
-      outputs: [],
     }
   }
   return {
-    ...cloneCell(template, false),
+    ...cloneNotebookCell(template, { preserveId: false }),
     source,
   }
 }
@@ -308,9 +296,10 @@ function setHiddenFlagMetadata(
 
 function pushDeletedCell(cell: NotebookCell, index: number): void {
   deletedStack.value.push({
-    cell: cloneCell(cell, true),
+    cell: cloneNotebookCell(cell),
     index,
   })
+  // Bounded history keeps command-mode undo predictable without unbounded memory growth.
   if (deletedStack.value.length > 100) {
     deletedStack.value.shift()
   }
@@ -323,7 +312,7 @@ function deleteCellAt(index: number, options: { copyToClipboard?: boolean; track
   }
 
   if (options.copyToClipboard) {
-    clipboardCell.value = cloneCell(cell, true)
+    clipboardCell.value = cloneNotebookCell(cell)
   }
 
   if (options.trackUndo !== false) {
@@ -345,7 +334,7 @@ function pasteCellAt(index: number): void {
     return
   }
   const safeIndex = Math.max(0, Math.min(index, props.cells.length))
-  const pastedCell = cloneCell(clipboardCell.value, false)
+  const pastedCell = cloneNotebookCell(clipboardCell.value, { preserveId: false })
   emit('cellAdd', { index: safeIndex, type: pastedCell.cell_type, cell: pastedCell })
   activeIndex.value = safeIndex
 }
@@ -373,6 +362,7 @@ function mergeCells(targetIndex: number, removeIndex: number): void {
   activeIndex.value = Math.min(targetIndex, props.cells.length - 2)
 }
 
+// Notebook-level keyboard orchestration; cell-local edit keys are handled in CodeMirror.
 const { setMode, onKeydown } = useKeyboard({
   keymap: keymapRef,
   readOnly: readOnlyRef,
@@ -415,7 +405,7 @@ const { setMode, onKeydown } = useKeyboard({
       return
     }
     const safeIndex = Math.max(0, Math.min(entry.index, props.cells.length))
-    const restored = cloneCell(entry.cell, true)
+    const restored = cloneNotebookCell(entry.cell)
     emit('cellAdd', {
       index: safeIndex,
       type: restored.cell_type,
@@ -423,7 +413,7 @@ const { setMode, onKeydown } = useKeyboard({
     })
     activeIndex.value = safeIndex
     redoStack.value.push({
-      cell: cloneCell(entry.cell, true),
+      cell: cloneNotebookCell(entry.cell),
       index: safeIndex,
     })
   },
@@ -445,7 +435,7 @@ const { setMode, onKeydown } = useKeyboard({
     if (!cell) {
       return
     }
-    clipboardCell.value = cloneCell(cell, true)
+    clipboardCell.value = cloneNotebookCell(cell)
   },
   onCutCell: (index) => {
     deleteCellAt(index, { copyToClipboard: true })
@@ -540,23 +530,13 @@ const { setMode, onKeydown } = useKeyboard({
   onSaveCommand: () => emit('save'),
   onInsertHeadingAbove: () => {
     const index = activeIndex.value
-    const headingCell: NotebookCell = {
-      id: generateCellId(),
-      cell_type: 'markdown',
-      source: '# ',
-      metadata: {},
-    }
+    const headingCell = createNotebookCell('markdown', { source: '# ' })
     emit('cellAdd', { index, type: 'markdown', cell: headingCell })
     activeIndex.value = index
   },
   onInsertHeadingBelow: () => {
     const index = activeIndex.value + 1
-    const headingCell: NotebookCell = {
-      id: generateCellId(),
-      cell_type: 'markdown',
-      source: '# ',
-      metadata: {},
-    }
+    const headingCell = createNotebookCell('markdown', { source: '# ' })
     emit('cellAdd', { index, type: 'markdown', cell: headingCell })
     activeIndex.value = index
   },

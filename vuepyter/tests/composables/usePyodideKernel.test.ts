@@ -17,6 +17,14 @@ interface MockPyodide extends PyodideInterface {
   terminate: ReturnType<typeof vi.fn>
 }
 
+function createFetchResponse(body: string, status = 200): Pick<Response, 'ok' | 'status' | 'text'> {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: async () => body,
+  }
+}
+
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T | PromiseLike<T>) => void
   let reject!: (reason?: unknown) => void
@@ -166,6 +174,76 @@ describe('composables/usePyodideKernel', () => {
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(1, 'import micropip')
     expect(instance.runPythonAsync).toHaveBeenNthCalledWith(2, 'import micropip')
     expect(String(instance.runPythonAsync.mock.calls[2]?.[0])).toContain('MPLBACKEND')
+  })
+
+  it('runs inline preamble source during initialization', async () => {
+    const instance = createMockPyodide()
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+
+    const kernel = usePyodideKernel({
+      preamble: 'import numpy as np\nx = 2',
+    })
+
+    await kernel.initialize()
+
+    expect(instance.runPythonAsync).toHaveBeenCalledWith('import numpy as np\nx = 2')
+  })
+
+  it('loads and executes a .py preamble file before kernel ready', async () => {
+    const instance = createMockPyodide()
+    const fetchMock = vi.fn(async () => createFetchResponse('import numpy as np\nx = 2'))
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const kernel = usePyodideKernel({
+      preamble: '/fixtures/preamble.py',
+    })
+
+    await kernel.initialize()
+
+    expect(fetchMock).toHaveBeenCalledWith('/fixtures/preamble.py', {
+      cache: 'no-store',
+    })
+    expect(instance.runPythonAsync).toHaveBeenCalledWith('import numpy as np\nx = 2')
+  })
+
+  it('loads notebook preambles and executes code cells only', async () => {
+    const instance = createMockPyodide()
+    const notebook = JSON.stringify({
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: {},
+      cells: [
+        {
+          cell_type: 'markdown',
+          source: ['# Ignore me'],
+        },
+        {
+          cell_type: 'code',
+          source: ['import numpy as np'],
+        },
+        {
+          cell_type: 'code',
+          source: ['x = 2'],
+        },
+      ],
+    })
+
+    vi.stubGlobal('loadPyodide', vi.fn(async () => instance))
+    vi.stubGlobal('fetch', vi.fn(async () => createFetchResponse(notebook)))
+
+    const kernel = usePyodideKernel({
+      preamble: '/fixtures/preamble.ipynb',
+    })
+
+    await kernel.initialize()
+
+    const calledSources = instance.runPythonAsync.mock.calls.map(([source]) => String(source))
+    const preambleSource = calledSources.find((source) => source.includes('import numpy as np'))
+    expect(preambleSource).toBeTruthy()
+    expect(preambleSource).toContain('import numpy as np')
+    expect(preambleSource).toContain('x = 2')
+    expect(preambleSource).not.toContain('# Ignore me')
   })
 
   it('executes a cell with stdout/stderr capture and execute_result output', async () => {

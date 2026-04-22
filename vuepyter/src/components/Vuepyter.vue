@@ -11,6 +11,7 @@ import {
 import { useNotebookModel } from '../composables/useNotebookModel'
 import { usePyodideKernel } from '../composables/usePyodideKernel'
 import { useVuepyterProvide } from '../composables/useVuepyterProvide'
+import { cloneNotebookCell } from '../utils/nbformat'
 import type {
   CellType,
   CodeEditorProps,
@@ -163,6 +164,7 @@ const isExternalLoading = computed(() => props.loading === true)
 const isKernelLoading = computed(() => kernel.status.value === 'loading')
 const loadingOverlayBlocksInteraction = computed(() => props.loadingBlockInteraction ?? true)
 
+// Overlay phase priority: explicit mode -> external loading -> kernel loading.
 const loadingPhase = computed<VuepyterLoadingPhase | null>(() => {
   if (resolvedLoadingOverlay.value === 'always') {
     return 'always'
@@ -241,6 +243,7 @@ const flushModelValue = (nextDocument?: SerializedNotebookDocument) => {
 
 const scheduleModelValueEmit = () => {
   pendingAutosave.value = true
+  // In manual mode we debounce model emits; interval mode is handled by setupAutosave.
   if (props.autosaveInterval !== false) {
     return
   }
@@ -261,6 +264,7 @@ const setupAutosave = () => {
     return
   }
   autosaveTimer = setInterval(() => {
+    // Avoid serializing unchanged notebooks at every tick.
     if (pendingAutosave.value) {
       flushModelValue()
     }
@@ -268,25 +272,6 @@ const setupAutosave = () => {
 }
 
 const clampIndex = (index: number) => Math.max(0, Math.min(index, notebookModel.cells.value.length - 1))
-
-const generateCellId = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `cell-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-const cloneCell = (cell: NotebookCell, preserveId = true): NotebookCell => {
-  const cloned = JSON.parse(JSON.stringify(cell)) as NotebookCell
-  if (!preserveId) {
-    cloned.id = generateCellId()
-  }
-  if (cloned.cell_type === 'code') {
-    cloned.execution_count = null
-    cloned.outputs = []
-  }
-  return cloned
-}
 
 const updateNotebookMetadata = (patch: Record<string, unknown>) => {
   notebookModel.notebook.value = {
@@ -309,6 +294,7 @@ watch(
 watch(
   () => props.modelValue,
   (value) => {
+    // Keep internal normalized notebook synced with external v-model replacement.
     notebookModel.setNotebook(value)
   },
   { deep: true },
@@ -380,7 +366,7 @@ const copyActiveCell = () => {
   if (!cell) {
     return
   }
-  clipboardCell.value = cloneCell(cell, true)
+  clipboardCell.value = cloneNotebookCell(cell, { resetCodeExecutionState: true })
 }
 
 const cutActiveCell = () => {
@@ -396,7 +382,10 @@ const pasteCellAt = (index: number) => {
     return
   }
   const safeIndex = Math.max(0, Math.min(index, notebookModel.cells.value.length))
-  const pastedCell = cloneCell(clipboardCell.value, false)
+  const pastedCell = cloneNotebookCell(clipboardCell.value, {
+    preserveId: false,
+    resetCodeExecutionState: true,
+  })
   notebookModel.insertCell(pastedCell, safeIndex)
   activeCellIndex.value = clampIndex(safeIndex)
 }
@@ -445,6 +434,7 @@ const executeCell = async (index: number) => {
     cellId: cell.id,
     source: cell.source,
   })
+  // Notebook model stores rendered outputs; kernel returns canonical execution payloads.
   notebookModel.setCellOutputs(cell.id, result.outputs, result.executionCount)
   if (result.error) {
     emit('cell:complete', {

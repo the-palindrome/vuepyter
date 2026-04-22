@@ -66,6 +66,25 @@ describe('components/CellOutput', () => {
     expect(img.attributes('alt')).toBe('cell output')
   })
 
+  it('renders image/png output for execute_result payloads', () => {
+    const outputs: CellOutputType[] = [
+      {
+        output_type: 'execute_result',
+        execution_count: 3,
+        data: {
+          'image/png': 'abc123',
+        },
+        metadata: {},
+      },
+    ]
+
+    const wrapper = mount(CellOutput, { props: { outputs } })
+    const img = wrapper.find('img.vuepyter-output-image')
+
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe('data:image/png;base64,abc123')
+  })
+
   it('renders ANSI traceback HTML for error outputs', () => {
     const outputs: CellOutputType[] = [
       {

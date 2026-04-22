@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { defineComponent, h, ref } from 'vue'
+import { defineComponent, h, nextTick, ref } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import { useKeyboard } from '@/composables/useKeyboard'
 import type { UseKeyboardOptions, UseKeyboardReturn } from '@/types'
@@ -188,6 +188,33 @@ describe('composables/useKeyboard', () => {
     wrapper.unmount()
     target.dispatchEvent(keydownEvent('s', { ctrlKey: true }))
     expect(onSave).toHaveBeenCalledTimes(1)
+  })
+
+  it('moves keydown listener when target ref changes', async () => {
+    const onSave = vi.fn()
+    const firstTarget = document.createElement('div')
+    const secondTarget = document.createElement('div')
+    const target = ref<EventTarget | null>(firstTarget)
+    const { wrapper } = mountKeyboard({
+      target,
+      onSave,
+    })
+
+    firstTarget.dispatchEvent(keydownEvent('s', { ctrlKey: true }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+
+    target.value = secondTarget
+    await nextTick()
+
+    firstTarget.dispatchEvent(keydownEvent('s', { ctrlKey: true }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+
+    secondTarget.dispatchEvent(keydownEvent('s', { ctrlKey: true }))
+    expect(onSave).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+    secondTarget.dispatchEvent(keydownEvent('s', { ctrlKey: true }))
+    expect(onSave).toHaveBeenCalledTimes(2)
   })
 
   it('supports command-mode run/sequence/save shortcuts from Jupyter defaults', () => {

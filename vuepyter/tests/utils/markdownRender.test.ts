@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { renderMarkdown, renderMarkdownToHtml } from '@/utils/markdownRender'
+import { renderMarkdownToHtml } from '@/utils/markdownRender'
 
 describe('utils/markdownRender', () => {
   it('renders headings, inline styles, lists, and fenced code blocks', () => {
@@ -16,7 +16,9 @@ describe('utils/markdownRender', () => {
   })
 
   it('renders links and images and sanitizes unsafe URLs by default', () => {
-    const html = renderMarkdown('[safe](https://example.com) [x](javascript:alert(1)) ![alt](https://img.test/a.png)')
+    const html = renderMarkdownToHtml(
+      '[safe](https://example.com) [x](javascript:alert(1)) ![alt](https://img.test/a.png)',
+    )
 
     expect(html).toContain('<a href="https://example.com">safe</a>')
     expect(html).toContain('<a>x</a>')
@@ -31,7 +33,7 @@ describe('utils/markdownRender', () => {
   })
 
   it('escapes raw html in markdown content', () => {
-    const html = renderMarkdown('<script>alert(1)</script> **ok**')
+    const html = renderMarkdownToHtml('<script>alert(1)</script> **ok**')
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
     expect(html).not.toContain('<script>')
     expect(html).toContain('<strong>ok</strong>')
@@ -42,8 +44,8 @@ describe('utils/markdownRender', () => {
   })
 
   it('renders inline and block LaTeX with KaTeX', () => {
-    const inlineHtml = renderMarkdown('Euler identity: $e^{i\\pi}+1=0$')
-    const blockHtml = renderMarkdown('$$\n\\int_0^1 x^2\\,dx\n$$')
+    const inlineHtml = renderMarkdownToHtml('Euler identity: $e^{i\\pi}+1=0$')
+    const blockHtml = renderMarkdownToHtml('$$\n\\int_0^1 x^2\\,dx\n$$')
 
     expect(inlineHtml).toContain('class="katex"')
     expect(inlineHtml).toContain('class="katex-html"')
@@ -52,7 +54,7 @@ describe('utils/markdownRender', () => {
   })
 
   it('does not parse latex delimiters inside inline code spans', () => {
-    const html = renderMarkdown('`$not-math$` and $x^2$')
+    const html = renderMarkdownToHtml('`$not-math$` and $x^2$')
 
     expect(html).toContain('<code>$not-math$</code>')
     expect(html).toContain('class="katex"')
